@@ -5,6 +5,19 @@ and decompiled Teufel Android app (APK JADX extraction). Conducted 2026-05-07.
 
 ---
 
+## Evidence Grading
+
+| Grade | Meaning |
+|---|---|
+| `[CONFIRMED]` | SOAP action invoked; expected response received |
+| `[OBSERVED]` | Seen in GENA event or HTTP response body |
+| `[APK]` | From JADX-decompiled Android app source |
+| `[INFERRED]` | Logical conclusion from other evidence |
+| `[UNTESTED]` | In SCPD but not yet invoked |
+| `[HTTP-500]` | Action exists but returned 500 (wrong context/state) |
+
+---
+
 ## Topology Discovered (Discovery + Device Descriptions)
 
 ### Expand hub (10.38.20.100) — Virtual Zone Renderers
@@ -250,6 +263,101 @@ but creates no `StationButtons` entry server-side.
 
 ---
 
+## Protocol Traces
+
+Annotated wire-level traces for the three most important interaction patterns.
+
+### Trace A: Station Button Assignment [CONFIRMED]
+
+```
+# SOAP request — ContentDirectory.AssignStationButton
+POST http://10.38.20.100:52186/cd/Control HTTP/1.1
+Content-Type: text/xml; charset=utf-8
+SOAPAction: "urn:schemas-upnp-org:service:ContentDirectory:1#AssignStationButton"
+
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <u:AssignStationButton xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
+      <Renderer>uuid:cebbe132-29a1-40f9-8b23-c5006aa27d6c</Renderer>
+      <Button>1</Button>
+      <ObjectID>0/RadioTime/Search/s-s44975</ObjectID>
+      <OptionalMetadata></OptionalMetadata>
+    </u:AssignStationButton>
+  </s:Body>
+</s:Envelope>
+
+# Response — HTTP 200
+<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <u:AssignStationButtonResponse xmlns:u="...ContentDirectory:1"/>
+  </s:Body>
+</s:Envelope>
+
+# Resulting CDS entry at 0/Renderers/uuid:cebbe132-.../StationButtons/538
+<item refID="0/RadioTime/Search/s-s44975">
+  <raumfeld:button>1</raumfeld:button>
+  <dc:title>BR Schlager</dc:title>
+  <raumfeld:ebrowse>http://opml.radiotime.com/Tune.ashx?…&c=ebrowse</raumfeld:ebrowse>
+  <res protocolInfo="http-get:*:audio/x-mpegurl:*" bitrate="128">
+    http://opml.radiotime.com/Tune.ashx?id=e186948974&sid=s44975&…&serial=00:0d:b9:1a:82:00
+  </res>
+</item>
+```
+
+The hub resolves the TuneIn `ObjectID` to a concrete playback URL at assignment time (snapshot
+semantics). The physical button press at runtime uses this stored URL directly — no CDS lookup
+occurs at playback time [CONFIRMED].
+
+### Trace B: GENA Subscription + Initial Event (AVTransport) [CONFIRMED]
+
+```
+# Subscribe request
+SUBSCRIBE http://10.38.20.100:49935/TransportService/Event HTTP/1.1
+CALLBACK: <http://10.38.20.29:12345/notify>
+NT: upnp:event
+TIMEOUT: Second-120
+
+# Subscribe response
+HTTP/1.1 200 OK
+SID: uuid:4398bdcf-9a38-456a-b487-255138341e20
+TIMEOUT: Second-300
+
+# Initial NOTIFY (SEQ: 0) — key fields in LastChange
+TransportState:          STOPPED
+CurrentTrackURI:         http://10.38.20.29:8080/stream.mp3      ← last-played URI persists
+CurrentTransportActions: Play,Previous,Seek,RepeatTrack,Repeat
+RoomStates:              uuid:9b109c9c-…=STOPPED                 ← Raumfeld extension
+SleepTimerActive:        0                                        ← Raumfeld extension
+ContentType:             ""                                       ← Raumfeld extension
+Bitrate:                 0                                        ← Raumfeld extension
+```
+
+The hub overrides the client-requested timeout (120 s) with its own value (300 s). The initial
+NOTIFY fires immediately after subscription and includes the full current state [CONFIRMED].
+
+### Trace C: Line-In Stream Access [CONFIRMED]
+
+```
+# HTTP request
+GET http://10.38.20.35:8888/stream.flac HTTP/1.1
+
+# Response
+HTTP/1.1 200 OK
+Content-Type: audio/x-flac
+Transfer-Encoding: chunked
+Server: Raumfeld Renderer
+
+fLaC…   ← FLAC stream header (libFLAC 1.3.1) followed by live audio data
+```
+
+The stream begins immediately with a valid FLAC header. No authentication, no session setup.
+The server does not close the connection — the response is an infinite chunked stream of live
+audio [CONFIRMED].
+
+---
+
 ## GENA Events — Raumfeld Extensions
 
 Subscribed to `http://10.38.20.100:49935/TransportService/Event` and `/RenderingService/Event`.
@@ -352,3 +460,40 @@ Containers: `object.container.album.musicAlbum[.compilation]`, `…person.musicA
 
 No undocumented REST API, web UI, JSON-RPC, or CGI endpoints found on any device.
 All functionality is exposed exclusively through UPnP SOAP services.
+
+---
+
+## Behavioral Semantics
+
+**Station button resolution timing.** `AssignStationButton` captures the fully-resolved playback
+URL at assignment time — for example, the concrete TuneIn redirect target — not merely the CDS
+reference [CONFIRMED]. When the physical button is pressed, the device plays this pre-resolved URL
+directly; no CDS lookup occurs at playback time. This means that if the TuneIn URL changes (e.g.,
+a new redirect target is issued by the radio service), the stored button becomes stale until the
+user reassigns it.
+
+**Zone vs. physical renderer distinction.** All playback control goes to virtual zone renderers
+on the Expand hub (ports 49935, 52405, 49306), never directly to a physical speaker IP
+[CONFIRMED]. The physical speaker devices (10.38.20.175, 10.38.20.35, 10.38.20.105) accept SOAP
+calls for device-local configuration (EQ, standby) but the hub is the authority for transport
+state [CONFIRMED]. This separation means a physical speaker can be swapped or reconfigured without
+changing any playback application code.
+
+**GENA room UUID vs. renderer UDN.** The `RoomStates` and `RoomVolumes` event properties use
+"room UUIDs" (e.g., `uuid:9b109c9c-493a-40a6-9951-30561eebf5b0`) that are distinct from both
+zone renderer UDNs and physical speaker UDNs [OBSERVED]. These room identifiers represent the
+logical grouping of speakers within a zone. A zone with two speakers in sync has a single room
+UUID; a zone with speakers in separate rooms has multiple room UUIDs. This three-level indirection
+(zone renderer → room → physical speaker) is the core of the Raumfeld multiroom model [INFERRED].
+
+**Line-in always live.** Port 8888 on One S speakers serves a continuously running FLAC stream
+regardless of whether line-in audio is assigned to any zone [CONFIRMED]. The stream exists as long
+as the speaker is powered; any Raumfeld renderer — or any HTTP client — can consume
+`http://{speaker-ip}:8888/stream.flac` as a live source without negotiation.
+
+**ConfigService preferences are hub-resident.** User preferences (including those that drive
+button behavior, EQ presets, and zone assignments) are stored inside the Expand hub via
+ConfigService, not in the mobile app [CONFIRMED]. Preferences survive app reinstalls and are
+accessible from any app instance on the LAN [INFERRED]. The RSA public-key encryption scheme
+(`GetPublicKey` → client encrypts payload → `SetPreferences`) allows preferences to be stored on
+the hub without the hub being able to read them in plaintext [APK].
