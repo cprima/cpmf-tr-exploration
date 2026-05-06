@@ -1,64 +1,13 @@
 """raumtube-play — stream a URL to a Raumfeld zone renderer."""
 
 import argparse
-import re
-import time
 
 from cprima_raumtube._compat import ensure_utf8_stdout
 from cprima_raumtube.config import load_config
-from cprima_raumtube.devices import CM_SVC, get_zone
-from cprima_raumtube.didl import _fmt_dur, build_didl
-from cprima_raumtube.soap import soap_call
-from cprima_raumtube.streaming import CachedStreamSession, LiveStreamSession
+from cprima_raumtube.devices import get_zone
+from cprima_raumtube.model.aggregates import System
+from cprima_raumtube.services import PlaybackManager, QueueManager, StreamManager, load_index
 from cprima_raumtube.upnp.transport import Renderer
-
-STOP_STATES = {"STOPPED", "NO_MEDIA_PRESENT"}
-
-
-def _print_protocol_info(zone: dict) -> None:
-    cm = zone.get("cm_control")
-    if not cm:
-        return
-    try:
-        result = soap_call(cm, CM_SVC, "GetProtocolInfo", {})
-        sink = result.get("Sink", "")
-        formats = sorted(
-            {
-                e.split(":")[2]
-                for e in sink.split(",")
-                if e.strip().startswith("http-get") and len(e.split(":")) >= 3
-            }
-        )
-        print(f"Accepts: {', '.join(formats) or '(none parsed)'}")
-    except RuntimeError:
-        pass
-
-
-def _play_and_poll(renderer: Renderer, stream_url: str, metadata: str) -> None:
-    print(f"\n→ SetAVTransportURI  {stream_url}")
-    renderer.set_uri(stream_url, metadata)
-    print("→ Play")
-    renderer.play()
-
-    print("\nState (Ctrl+C to stop):")
-    try:
-        while True:
-            time.sleep(2)
-            state = renderer.get_state()
-            try:
-                pos = renderer.get_position().get("RelTime", "")
-            except RuntimeError:
-                pos = ""
-            print(f"  {state:20s} {pos}")
-            if state in STOP_STATES:
-                print("Renderer stopped.")
-                break
-    except KeyboardInterrupt:
-        print("\nInterrupted — stopping Raumfeld ...")
-        try:
-            renderer.stop()
-        except RuntimeError:
-            pass
 
 
 def main() -> None:
@@ -70,7 +19,23 @@ def main() -> None:
     ap.add_argument("url")
     ap.add_argument("zone", nargs="?", default="HomeOffice")
     ap.add_argument(
-        "--live", action="store_true", help="Force pipe mode (radio, TTS, generated streams)"
+        "--live", action="store_true", help="Force pipe mode (radio, TTS, live streams)"
+    )
+    ap.add_argument(
+        "--enqueue",
+        action="store_true",
+        help="Append to existing queue instead of replacing it",
+    )
+    ap.add_argument(
+        "--repeat",
+        choices=["off", "one", "all"],
+        default=None,
+        help="Set repeat mode (default: off)",
+    )
+    ap.add_argument(
+        "--no-autoplay",
+        action="store_true",
+        help="Play one item and exit without advancing the queue",
     )
     ap.add_argument(
         "--local-ip", default=cfg.local_ip, help="Local IP exposed to the Raumfeld renderer"
@@ -83,59 +48,43 @@ def main() -> None:
         ap.error("--local-ip is required (or set RAUMTUBE_LOCAL_IP)")
 
     zone = get_zone(args.zone, args.devices_file)
+    zone_id = zone["udn"]
     renderer = Renderer.from_zone(zone)
-    print(f"Zone   : {zone['friendly_name']} ({zone['model']})")
+    print(f"Zone   : {zone['friendly_name']} ({zone.get('model', '?')})")
 
-    # Try to load from cache before probing
-    from cprima_raumtube.sources import youtube as yt
+    # Build in-memory system, load persistent cache index
+    system = System()
+    load_index(system.library, cfg.local_ip and cfg.cache_dir or cfg.cache_dir)
 
-    yt_id_match = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", args.url)
-    yt_id = yt_id_match.group(1) if yt_id_match else None
+    sm = StreamManager(args.local_ip, args.port)
+    qm = QueueManager(system, cfg)
+    pm = PlaybackManager(system, renderer, qm, sm)
 
-    sidecar = yt.load_sidecar(cfg.cache_dir, yt_id) if yt_id else None
-    mp3_path = (cfg.cache_dir / f"{yt_id}.mp3") if yt_id else None
-    has_cache = bool(sidecar and mp3_path and mp3_path.exists())
+    mode = "live" if args.live else "auto"
+    item = qm.enqueue(zone_id, args.url, mode=mode, replace=not args.enqueue)
+    print(f"Title  : {item.title}")
+    if item.duration_seconds:
+        from cprima_raumtube.didl import _fmt_dur
 
-    if has_cache and not args.live:
-        print(f"\nCache hit for {yt_id} — skipping probe")
-        title = sidecar["title"]
-        thumbnail = sidecar.get("thumbnail", "")
-        duration = int(sidecar.get("duration") or 0)
-        live = False
-        info = sidecar
+        print(f"Duration: {_fmt_dur(item.duration_seconds)}")
+
+    if args.repeat:
+        qm.set_repeat(zone_id, args.repeat)
+
+    pm.play_current(zone_id)
+
+    if args.no_autoplay:
+        try:
+            input("\nPress Enter to stop …")
+        except KeyboardInterrupt:
+            pass
+        pm.stop(zone_id)
     else:
-        print(f"\nProbing: {args.url}")
-        info = yt.probe(args.url)
-        title = info.get("title", "Unknown")
-        thumbnail = info.get("thumbnail", "")
-        duration = int(info.get("duration") or 0)
-        live = args.live or yt.is_live_stream(info)
 
-    print(f"Title  : {title}")
-    if duration:
-        print(f"Duration: {_fmt_dur(duration)}")
-    live_status = info.get("live_status", "")
-    print(
-        f"Mode   : {'LIVE (forced)' if args.live else 'LIVE' if live else 'CACHE'}"
-        + (f"  [{live_status}]" if live_status else "")
-    )
+        def _on_change(uri: str, reason: object) -> None:
+            if reason:
+                print(f"\n  [{reason}]  advancing queue …")
 
-    _print_protocol_info(zone)
+        pm.run_autoplay_loop(zone_id, on_state_change=_on_change)
 
-    if live:
-        audio_url = info.get("url") or info["formats"][-1]["url"]
-        with LiveStreamSession(audio_url, args.local_ip, args.port) as session:
-            meta = build_didl(session.stream_url, title, live=True)
-            _play_and_poll(renderer, session.stream_url, meta)
-    else:
-        if has_cache and mp3_path:
-            path = mp3_path
-        else:
-            print(f"\nDownloading to cache ({_fmt_dur(duration)}) ...")
-            path = yt.download_to_cache(args.url, info, cfg.cache_dir)
-        print(f"File   : {path}  ({path.stat().st_size / 1024 / 1024:.1f} MB)")
-        with CachedStreamSession(path, args.local_ip, args.port) as session:
-            meta = build_didl(
-                session.stream_url, title, live=False, thumbnail=thumbnail, duration=duration
-            )
-            _play_and_poll(renderer, session.stream_url, meta)
+    sm.stop_all()

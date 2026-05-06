@@ -8,6 +8,7 @@ from typing import Literal
 
 # Playback mode flags for Queue
 QueueOrigin = Literal["ad_hoc", "playlist", "radio", "autoplay"]
+QueueEndBehavior = Literal["stop", "clear", "idle"]
 
 
 @dataclass
@@ -152,6 +153,7 @@ class Queue:
     consume_mode: bool = False
     crossfade: bool = False
     origin: QueueOrigin = "ad_hoc"
+    queue_end_behavior: QueueEndBehavior = "stop"
 
     @property
     def current_item(self) -> QueueItem | None:

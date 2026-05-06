@@ -35,6 +35,7 @@ from cprima_raumtube.model.media import (
     MediaResolution,
     Playlist,
     Queue,
+    QueueEndBehavior,
     QueueItem,
     QueueOrigin,
 )
@@ -96,6 +97,7 @@ __all__ = [
     "MediaItemRef",
     "Playlist",
     "Queue",
+    "QueueEndBehavior",
     "QueueItem",
     "QueueOrigin",
     # streaming

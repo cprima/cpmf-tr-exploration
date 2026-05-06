@@ -3,6 +3,13 @@
 from cprima_raumtube.config import Config, load_config
 from cprima_raumtube.devices import AVT_SVC, CM_SVC, RC_SVC, get_zone, load_zones
 from cprima_raumtube.didl import build_didl
+from cprima_raumtube.services import (
+    PlaybackManager,
+    QueueManager,
+    StreamManager,
+    load_index,
+    save_index,
+)
 from cprima_raumtube.soap import soap_call
 from cprima_raumtube.streaming import CachedStreamSession, LiveStreamSession
 from cprima_raumtube.upnp.transport import Renderer
@@ -20,4 +27,9 @@ __all__ = [
     "load_config",
     "build_didl",
     "Renderer",
+    "QueueManager",
+    "PlaybackManager",
+    "StreamManager",
+    "load_index",
+    "save_index",
 ]
