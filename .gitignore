@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Distribution / packaging
+*.egg-info/
+*.egg
+dist/
+build/
+wheels/
+sdist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv
+.uv/
+
+# Runtime data (discovery results, SCPD dumps)
+data/*.json
+*.json
+!pyproject.toml
+
+# Audio cache
+.cache/
+/tmp/raumfeld-cache/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Env files with secrets
+.env
+.env.*
+!.env.example
+
+# Type checker / linter caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

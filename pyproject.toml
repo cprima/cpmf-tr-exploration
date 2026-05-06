@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cprima-raumtube"
+version = "0.1.0"
+description = "UPnP audio bridge for Teufel Raumfeld devices"
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "async-upnp-client>=0.40.0",
+]
+
+[project.optional-dependencies]
+youtube = ["yt-dlp>=2024.0.0"]
+dev     = ["pytest>=8.0", "ruff>=0.4"]
+
+[project.scripts]
+raumtube-discover = "cli.discover:main"
+raumtube-play     = "cli.play:main"
+raumtube-scpd     = "cli.scpd:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cprima_raumtube", "cli"]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
