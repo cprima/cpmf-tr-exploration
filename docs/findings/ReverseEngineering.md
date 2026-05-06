@@ -299,6 +299,16 @@ The following areas remain unexplored or unresolved after this investigation:
 10. **Multi-speaker zone group formation** — the SOAP call or hub event that triggers zone merger
     and the resulting coordinator UDN assignment have not been observed. The group model is
     inferred from APK source only [APK].
+11. **Firmware image signing / secure boot** — the update protocol uses SHA-256 for integrity
+    only (hash IS the download URL path). An unsigned custom firmware binary with a matching
+    SHA-256 would pass the hash check. Whether the hub enforces secure boot or image signing at
+    the kernel/bootloader level is unknown and requires binary analysis of the 36.8 MB Expand
+    firmware image [INFERRED].
+12. **Expand hub end-of-life status** — firmware 2.17.4 (built 2022-06-03) is the last official
+    Expand release. The update server still serves the manifest but there is no newer version.
+    Physical speakers (One S, Cinebar Lux) remain at 2.21.0 with the same binary. The
+    `testing/v1/updateLocations` redirect path combined with the known manifest format is the
+    only viable route to deploying alternative firmware on the EoL hub [INFERRED].
 
 ---
 

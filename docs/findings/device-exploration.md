@@ -551,8 +551,84 @@ App: GET /raumfeldSetup/v1/softwareUpdate (long-poll until state settles)
 
 The device performs the actual firmware download from an upstream server (not the app). The app
 provides only a callback URL and uses `SoftwareUpdateTimes` to display a progress estimate [APK].
-A testing/debug path (`/testing/v1/updateLocations`) lists alternate firmware channels, likely
-a prerelease or QA feature [APK].
+A testing/debug path (`/testing/v1/updateLocations`) lists alternate firmware channels and can
+be used to redirect all firmware downloads to a custom server [APK, CONFIRMED].
+
+---
+
+## Firmware Update Protocol [CONFIRMED]
+
+### Update Server
+
+Default base URL: `https://updates.raumfeld.com` → proxies to `https://raumfeld.updates.teufel.de/live/` (nginx → Azure Blob Storage).
+
+### Manifest URL Pattern
+
+`GET {base}/{model_number}.updates`
+
+| Device | Model number | Path |
+|---|---|---|
+| Raumfeld Expand | 5 | `/5.updates` |
+| Teufel One S | 23 | `/23.updates` |
+| Teufel Cinebar Lux | 27 | `/27.updates` |
+
+### Manifest Format (text/plain)
+
+```
+[sha256_of_firmware_binary]
+\tdescription=Software update (2.17.4) for Raumfeld Expand
+\thardware=5
+\tversion=2.17.4
+\tstorageVersion=2.17.4
+\tvcsRevision=f24c6f792624df1f4fa0441e0ff4eb00dc70092f
+\tbuildTime=2022-06-03T14:10:40+0200
+```
+
+The `[sha256_hash]` is both the integrity check for the binary **and the URL path** for
+downloading the firmware (no separate file extension).
+
+### Firmware Binary URL
+
+`GET {base}/{sha256_hash}` (exact 64-character hex string, no suffix)
+
+### Current Firmware Versions (as of 2026-05-07)
+
+| Model | Current on device | Latest in manifest | Binary size |
+|---|---|---|---|
+| Raumfeld Expand (model 5) | 2.17.4 | 2.17.4 (EoL, no newer update) | 36.8 MB |
+| Teufel One S (model 23) | 2.21.0 | 2.21.0 (latest, device up-to-date) | 32.9 MB |
+| Teufel Cinebar Lux (model 27) | 2.21.0 | 2.21.0 (latest, device up-to-date) | 32.9 MB |
+
+One S and Cinebar Lux share the same firmware binary (same hash: `7f123d28...`).
+
+### Custom Firmware / Update Server Redirect
+
+The `POST /testing/v1/updateLocations` endpoint accepts `{"url":"http://custom-server","force":false}`
+and immediately redirects all subsequent update checks to the custom server [CONFIRMED].
+
+```bash
+# Redirect to custom server
+curl -sk -H "X-AuthKey: $AUTH_KEY" -H "Content-Type: application/json" \
+     -X POST https://$DEVICE:48366/testing/v1/updateLocations \
+     -d '{"url":"http://your-server","force":false}'
+# → HTTP 204
+
+# Hub now fetches GET http://your-server/5.updates
+# Serve a custom manifest → hub downloads binary at GET http://your-server/{sha256}
+```
+
+Hub request headers observed during update check:
+```
+GET /5.updates HTTP/1.1
+User-Agent: Raumfeld Expand/2.17.4
+X-DeviceId: 00:0d:b9:1a:82:00
+X-FirmwareVersion: 2.17.4
+X-Model: Raumfeld_5
+```
+
+The integrity check is SHA-256 only — not an RSA/ECDSA signature. Serving a custom binary with
+its own matching SHA-256 hash in the manifest will pass the hash check. Whether the hub enforces
+secure boot or image signing at the OS level is unknown [INFERRED requires binary analysis].
 
 ### Live Probe Results [CONFIRMED]
 
