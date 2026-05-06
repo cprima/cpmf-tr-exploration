@@ -10,13 +10,13 @@
 
 The Teufel/Raumfeld multiroom audio system is a hub-and-spoke UPnP AV installation in which a
 single Expand hub device (firmware 2.17.4) acts as the sole UPnP authority for all zone-level
-playback [CONFIRMED]. The system communicates exclusively over standard UPnP SOAP and GENA on the
-local network — no cloud dependency, no proprietary binary protocol, no WebSocket layer
-[CONFIRMED]. The main finding of this reverse-engineering effort is that the full feature set of
-the system (zone transport, multi-speaker synchronization, preset buttons, configuration
-persistence, EQ control, and line-in streaming) is accessible through documented UPnP service
-interfaces plus a small set of vendor-defined SOAP actions that conform to the UPnP extension
-model.
+playback [CONFIRMED]. Runtime control (playback, volume, presets) communicates over standard
+UPnP SOAP and GENA on the local network. Device provisioning (WiFi setup, firmware updates,
+stereo pairing) uses a separate HTTPS JSON REST API on port 48366, served by every device
+including physical speakers — no cloud dependency and no proprietary binary protocol [CONFIRMED,
+APK]. The main finding of this reverse-engineering effort is that the full feature set of the
+system is accessible through these two local-network protocol surfaces: UPnP SOAP for runtime
+operations, and the port-48366 REST API for setup/provisioning, both fully LAN-resident.
 
 ---
 
@@ -79,12 +79,15 @@ RenderingControl:1 [CONFIRMED]. Connection negotiation uses ConnectionManager:1 
 Proprietary extensions are confined to the defined UPnP extension points: vendor-prefixed SOAP
 actions appended to standard service SCPDs (e.g., `BendAVTransportURI`, `EnterManualStandby`,
 `AssignStationButton`), and vendor-namespaced DIDL-Lite metadata elements (`raumfeld:button`,
-`raumfeld:ebrowse`, `raumfeld:durability`, etc.) [APK, CONFIRMED]. No undocumented HTTP APIs,
-no WebSocket connections, no JSON-RPC endpoints, and no cloud-mediated control paths were found
-on any device [CONFIRMED].
+`raumfeld:ebrowse`, `raumfeld:durability`, etc.) [APK, CONFIRMED]. No WebSocket connections,
+no JSON-RPC endpoints, and no cloud-mediated control paths were found on any device [CONFIRMED].
+A second HTTP surface — the HTTPS REST API on port 48366 — exists for provisioning operations
+and is documented separately (see section below and `device-exploration.md`).
 
 The system is therefore fully controllable from any standards-compliant UPnP control point, with
 Raumfeld-specific features accessible by adding the vendor-defined actions to the controller.
+Provisioning and firmware management require the port-48366 REST API with an `X-AuthKey`
+credential obtained during the initial device pairing flow.
 
 ---
 
@@ -197,6 +200,72 @@ bypassing the hub entirely:
   present on physical speaker AVTransport services [OBSERVED in SCPD].
 - **System sounds (Cinebar Lux)** — `PlaySystemSound` on the Cinebar's RenderingControl service
   plays a local beep (`Success` or `Failure`) [UNTESTED directly, listed in SCPD].
+
+---
+
+## Raumfeld Setup REST API (Port 48366)
+
+A second, entirely separate protocol surface exists alongside UPnP/SOAP. Every device in the
+installation — including physical speakers — serves an HTTPS JSON REST API on port **48366**
+[CONFIRMED]. It is used exclusively for provisioning-time operations; runtime playback control
+goes entirely through UPnP SOAP.
+
+Discovery: Bonjour (`_https._tcp.`, service name `RaumfeldSetup`); the app also does active
+LAN scanning with 500 ms connect probes, rescanning every 3 s [APK].
+
+**Unauthenticated endpoint [CONFIRMED]:**
+```
+GET https://<device-ip>:48366/raumfeldSetup/version
+→ {"versions": ["v1"]}
+```
+
+**Authentication — `X-AuthKey` derivation [APK, CONFIRMED]:**
+
+The header value is `SHA-256(deviceIp + secret + controlPointIp)` encoded as lowercase hex,
+where `secret = "$392G3hJ7Dl3qZ4"` is hardcoded in the APK
+(`SetupSecurityUtils.computeAuthKey()`). Both IPs are UTF-8 encoded byte strings concatenated
+with no separator. The control-point IP is the client machine's LAN IP; the device IP is the
+target Raumfeld device IP. No out-of-band pairing step exists — any host on the same LAN can
+derive a valid key from its own IP. After authentication the device returns an `X-DeviceId`
+response header which the app stores for subsequent requests.
+
+Python derivation:
+```python
+import hashlib
+key = hashlib.sha256(
+    device_ip.encode() + b"$392G3hJ7Dl3qZ4" + client_ip.encode()
+).hexdigest()
+```
+
+**Authenticated endpoints (require `X-AuthKey` header) [APK, CONFIRMED]:**
+
+| Endpoint | Purpose |
+|---|---|
+| `GET raumfeldSetup/v1/device` | Model name, model number, deviceCategory, isAccessPoint, isSetupInProgress |
+| `GET raumfeldSetup/v1/deviceConfiguration` | Room name, zone renderer UDN, host/client state, stereo pairing mapping; long-poll capable |
+| `POST raumfeldSetup/v1/deviceConfiguration` | Set room name and stereo channel mapping |
+| `GET raumfeldSetup/v1/networks` | Available WiFi networks; long-poll capable |
+| `GET raumfeldSetup/v1/networks/{id}/status` | Connection status for a specific SSID |
+| `POST raumfeldSetup/v1/networks/{id}/connect` | Join a WiFi network |
+| `GET/POST raumfeldSetup/v1/networkCredentials` | Read/write stored WiFi credentials |
+| `GET raumfeldSetup/v1/softwareUpdate` | Update state machine: idle → checking → downloading → ready-for-update → installing |
+| `POST raumfeldSetup/v1/softwareUpdate` | Trigger OTA update; returns estimated times; device calls back the app on reconnect |
+
+**`SoftwareUpdateState` JSON fields:** `state` (idle/checking/downloading/ready-for-update/installing),
+`updateAvailable` (yes/no/not-checked/server-unreachable/download-failed), `currentVersion`,
+`availableVersion`, `downloadProgress` (0–100) [APK].
+
+**OTA flow:** app POSTs a `CallbackRequest` with `callbackURLs: ["http://<app-ip>:57368/raumfeldSetup/v1/reconnect"]`;
+device downloads and installs firmware autonomously; device POSTs the callback when done; app
+long-polls `GET .../softwareUpdate` until state settles [APK].
+
+**Stereo pairing:** `DeviceConfigurationGet.channelMapping` is `stereo-l-r` or `stereo-r-l`;
+`channelMappingCanBeChanged()` returns true only when both values are present in `allowedChannelMappings` [APK].
+
+**Relationship to UPnP SetupService (port 50076):** The UPnP `SetupService` exposes overlapping
+functions (`GetInfo`, `GetNetworkInfo`, `CheckForUpdate`, `DoUpdate`) via SOAP — the same
+operations are also reachable over the REST API. The REST API appears to be the primary path
+used by the app; the SOAP SetupService may be a legacy compatibility layer [INFERRED].
 
 ---
 

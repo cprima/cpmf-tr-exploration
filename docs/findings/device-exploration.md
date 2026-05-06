@@ -457,9 +457,133 @@ Containers: `object.container.album.musicAlbum[.compilation]`, `…person.musicA
 | Expand hub | REFUSED | No web UI on standard port |
 | UPnP ports (49935, 51563, 50076, 52186) | HTTP 404 at `/` | Only respond to SOAP/device-description paths |
 | Physical speakers (port 8888) | HTTP 200 | Live line-in FLAC stream (chunked transfer) |
+| All devices (port 48366) | HTTPS 200 | Raumfeld Setup REST API (see section below) |
 
-No undocumented REST API, web UI, JSON-RPC, or CGI endpoints found on any device.
-All functionality is exposed exclusively through UPnP SOAP services.
+The system exposes two independent protocol surfaces: UPnP/SOAP for runtime playback control,
+and an HTTPS REST API on port 48366 for device provisioning and firmware management.
+
+---
+
+## Raumfeld Setup REST API (Port 48366) [APK]
+
+All devices — Expand hub (10.38.20.100) and all physical speakers (10.38.20.35, 10.38.20.175,
+10.38.20.105) — serve an HTTPS JSON REST API on port **48366** [CONFIRMED]. The API is
+discovered via **Bonjour** (`_https._tcp.`, service name `RaumfeldSetup`). The app falls back
+to LAN-scanning by pinging port 48366 with 500 ms connect timeout, rescanning every 3 s [APK].
+
+Port constant confirmed in APK: `SetupConstants.RF_DEVICE_API_PORT = 48366`.  
+Control-point callback port (app listens for device callbacks): `SetupConstants.CONTROL_POINT_API_PORT = 57368`.
+
+### Authentication [APK, CONFIRMED]
+
+The `X-AuthKey` header value is `SHA-256(deviceIp + secret + controlPointIp)` in lowercase hex.
+The secret `$392G3hJ7Dl3qZ4` is hardcoded in `SetupSecurityUtils.computeAuthKey()`.
+No pairing is required — any LAN host can derive a valid key from its own IP.
+
+```python
+import hashlib
+key = hashlib.sha256(
+    device_ip.encode() + b"$392G3hJ7Dl3qZ4" + client_ip.encode()
+).hexdigest()
+```
+
+After a successful authenticated request the device sets `X-DeviceId` in the response header;
+the app stores this value for subsequent calls.
+
+### Endpoints (from `SetupServiceApiDelegate` Retrofit interface) [APK]
+
+| Method | Path | Response type | Notes |
+|---|---|---|---|
+| GET | `raumfeldSetup/version` | `Versions` | Returns `{"versions":["v1"]}` — no auth required [CONFIRMED] |
+| GET | `raumfeldSetup/v1/device` | `SetupDeviceInfo` | model, modelName, modelNumber, deviceCategory, modelImageURL, isAccessPoint, isSetupInProgress, deviceId |
+| GET | `raumfeldSetup/v1/device` + `X-AuthKey` | `SetupDeviceInfo` | Authenticated variant |
+| GET | `raumfeldSetup/v1/deviceConfiguration` | `DeviceConfigurationGet` | allowedChannelMappings, channelMapping, roomName, state, rendererUDN; long-poll via `updateID` header |
+| POST | `raumfeldSetup/v1/deviceConfiguration` | — | Set room name, channel mapping (stereo pairing) |
+| GET | `raumfeldSetup/v1/networkCredentials` | `List<NetworkCredentials>` | Saved WiFi credentials |
+| POST | `raumfeldSetup/v1/networkCredentials` | — | Store WiFi credentials |
+| GET | `raumfeldSetup/v1/networks` | `List<Network>` | Available WiFi networks; long-poll via `updateID` header |
+| GET | `raumfeldSetup/v1/networks/{id}/status` | `NetworkStatus` | Connection status for a specific network |
+| POST | `raumfeldSetup/v1/networks/{id}/connect` | — | Join network; body = `CallbackRequest` |
+| GET | `raumfeldSetup/v1/softwareUpdate` | `SoftwareUpdateState` | state, updateAvailable, currentVersion, availableVersion, downloadProgress; long-poll via `updateID` header |
+| POST | `raumfeldSetup/v1/softwareUpdate` | `SoftwareUpdateTimes` | Trigger OTA; body = `CallbackRequest`; returns estimatedInstallationTimeInSeconds, estimatedRebootTimeInSeconds |
+
+Endpoints other than `raumfeldSetup/version` require authentication and return the response body
+`Unauthorized request from '{client-ip}' for '{device-ip}'` when called without credentials [CONFIRMED].
+
+Auth headers: `X-AuthKey` (authentication key from pairing), `X-DeviceId` (device identifier).
+
+### `SoftwareUpdateState` fields [APK]
+
+| Field | Type | JSON values |
+|---|---|---|
+| `state` | `UpdateState` | `idle`, `checking`, `downloading`, `ready-for-update`, `installing` |
+| `updateAvailable` | `UpdateAvailable` | `yes`, `no`, `not-checked`, `server-unreachable`, `download-failed` |
+| `currentVersion` | String | e.g. `"2.17.4"` |
+| `availableVersion` | String | version string if update available |
+| `downloadProgress` | Int | 0–100 percent |
+
+### `DeviceConfigurationGet` fields [APK]
+
+| Field | Type | Notes |
+|---|---|---|
+| `state` | `DeviceConfigurationState` | `not-configured`, `becoming-host`, `becoming-client`, `host`, `client` |
+| `channelMapping` | String | `stereo-l-r` or `stereo-r-l` for stereo pairs |
+| `allowedChannelMappings` | `List<String>` | Only shows both options for stereo-capable devices |
+| `roomName` | String | Room/zone name configured via this API |
+| `rendererUDN` | String | UDN of the zone renderer this device is assigned to |
+
+### Firmware Update Flow [APK]
+
+```
+App: GET /raumfeldSetup/v1/softwareUpdate
+  ← { state: "idle", updateAvailable: "yes", currentVersion: "2.17.4", availableVersion: "X.Y.Z" }
+
+App: POST /raumfeldSetup/v1/softwareUpdate
+  → { "callbackURLs": ["http://<phone-ip>:57368/raumfeldSetup/v1/reconnect"] }
+  ← { estimatedInstallationTimeInSeconds: N, estimatedRebootTimeInSeconds: M }
+
+Device: downloads and installs firmware (autonomous)
+Device: POST http://<phone-ip>:57368/raumfeldSetup/v1/reconnect  ← callback when done
+
+App: GET /raumfeldSetup/v1/softwareUpdate (long-poll until state settles)
+  ← { state: "idle", updateAvailable: "no", currentVersion: "X.Y.Z" }
+```
+
+The device performs the actual firmware download from an upstream server (not the app). The app
+provides only a callback URL and uses `SoftwareUpdateTimes` to display a progress estimate [APK].
+A testing/debug path (`/testing/v1/updateLocations`) lists alternate firmware channels, likely
+a prerelease or QA feature [APK].
+
+### Live Probe Results [CONFIRMED]
+
+`GET raumfeldSetup/version` returns `{"versions":["v1"]}` on all four devices with no auth.
+
+`GET raumfeldSetup/v1/device` per device:
+
+| Device IP | model | modelName | isAccessPoint | isSetupInProgress |
+|---|---|---|---|---|
+| 10.38.20.100 | `Raumfeld_5` | Raumfeld Expand | true | false |
+| 10.38.20.175 | `Raumfeld_23` | Teufel One S | false | false |
+| 10.38.20.35 | `Raumfeld_23` | Teufel One S | false | false |
+| 10.38.20.105 | `Raumfeld_27` | Teufel Cinebar Lux | false | false |
+
+`GET raumfeldSetup/v1/deviceConfiguration` per device:
+
+| Device IP | state | channelMapping | roomName | rendererUDN |
+|---|---|---|---|---|
+| 10.38.20.100 | host | — | — | — |
+| 10.38.20.175 | client | mono | 🏠 HomeOffice | uuid:cebbe132-29a1-40f9-8b23-c5006aa27d6c |
+| 10.38.20.35 | client | mono | Küche | uuid:3a472670-a62a-4f20-9df4-dbb4e7de35dd |
+| 10.38.20.105 | client | stereo-l-r | WoZi | uuid:84d1a7f9-45a7-4e44-88d6-42d7187e37e9 |
+
+Cinebar Lux (10.38.20.105) additionally reports `"needsRemoteControlPairing": true` and
+`"needsSubwooferPairing": true` — the wireless subwoofer and Bluetooth remote have not been
+paired with this unit.
+
+`GET raumfeldSetup/v1/softwareUpdate` on hub: `{"state":"checking","currentVersion":"2.17.4","updateAvailable":"not-checked"}`
+
+`GET raumfeldSetup/v1/networks` on hub: wired interface (MAC `00:0d:b9:1a:82:00`, IP `10.38.20.100`)
++ WiFi client on `MagentaWLAN-BW8C` (ch1, 2412 MHz, WPA-PSK, signalQuality 49).
 
 ---
 
