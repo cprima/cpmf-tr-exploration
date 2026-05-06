@@ -43,14 +43,49 @@ Per-device feature support based on SCPD analysis and live testing.
 
 ---
 
-## MIME Types (observed via GetProtocolInfo)
+## MIME Types (from GetProtocolInfo — Zone Renderer)
 
-| MIME Type | Expand | One S | Cinebar Lux |
-|---|---|---|---|
-| `audio/mpeg` (MP3) | Yes | Yes | Yes |
-| `audio/mp4` (AAC/M4A) | Unknown | Unknown | Unknown |
-| `audio/ogg` | Unknown | Unknown | Unknown |
-| `audio/x-flac` | Unknown | Unknown | Unknown |
+| MIME Type | Expand (zone renderer) | Notes |
+|---|---|---|
+| `audio/mpeg` / `audio/mp3` | Yes | Multiple aliases supported |
+| `audio/mp4` / `audio/m4a` / `audio/m4b` | Yes | AAC in M4A/M4B containers |
+| `audio/ogg` / `audio/vorbis` | Yes | Multiple OGG aliases |
+| `audio/x-flac` / `audio/flac` | Yes | Lossless |
+| `audio/alac` | Yes | Apple Lossless |
+| `audio/wav` / `audio/x-wav` | Yes | Uncompressed PCM |
+| `audio/x-ac3` | Yes | Dolby Digital |
+| `audio/x-mpegurl` | Yes | M3U playlist / TuneIn streams |
+| `application/xspf+xml` | Yes | XSPF playlist format |
+| `video/mp4` | Yes | Video container (audio track) |
+| `dlna-playcontainer` | Yes | DLNA multi-item playlist |
+
+---
+
+## Proprietary / Extended Capabilities
+
+| Capability | Service | Notes |
+|---|---|---|
+| Sleep timer | AVTransport | `StartSleepTimer(SecondsUntilSleep, SecondsForVolumeRamp)` on zone renderer |
+| Standby control | AVTransport | `EnterAutomaticStandby` / `EnterManualStandby` / `LeaveStandby(Room)` |
+| Play mode | AVTransport | `SetPlayMode`: NORMAL, SHUFFLE, REPEAT_ONE, REPEAT_ALL, RANDOM |
+| Spotify presets | AVTransport | `GetSpotifyPreset(Button)` — requires active Spotify session |
+| Stream properties | AVTransport | `GetStreamProperties()` — returns ContentType + Bitrate during playback |
+| Like/unlike | AVTransport | `LikeCurrentTrack` / `UnlikeCurrentTrack` (music service integration) |
+| Hot-swap stream | AVTransport | `SetResourceForCurrentStream(ResourceURI)` — untested |
+| 3-band EQ | RenderingControl | `GetFilter`/`SetFilter(LowDB, MidDB, HighDB)` — Cinebar Lux confirmed |
+| Stereo widening | RenderingControl | `QueryFilter`/`ToggleFilter(stereo-widening)` — Cinebar Lux |
+| Stereo balance | RenderingControl | `GetBalance`/`SetBalance` — Cinebar Lux |
+| dB volume | RenderingControl | `GetVolumeDB`/`SetVolumeDB(Channel)` — Cinebar Lux |
+| Line-in URL | RenderingControl | `GetLineInStreamURL()` — returns `http://{ip}:8888/stream.flac` |
+| Generic device settings | RenderingControl | `GetDeviceSetting`/`SetDeviceSetting(Name, Value)` — Cinebar |
+| Station buttons (presets) | ContentDirectory | `AssignStationButton(Renderer, Button, ObjectID)` — see exploration doc |
+| Queue management | ContentDirectory | `CreateQueue`, `AddItemToQueue`, `MoveInQueue`, `RemoveFromQueue` |
+| Firmware version | SetupService | `GetInfo()` → `SoftwareVersion=2.17.4` |
+| Network info | SetupService | `GetNetworkInfo()` → IP, WiFi access point, signal strength |
+| Device mode | SetupService | `GetDeviceMode()` → MASTER / CLIENT / WAIT_FOR_SETUP |
+| OTA update | SetupService | `CheckForUpdate` / `DoUpdate(Version)` |
+| Config preferences | ConfigService | `GetPreferences(PublicKey)` / `SetPreferences` — RSA-encrypted store |
+| Per-room volume | RenderingControl (zone) | `GetRoomVolume`/`SetRoomVolume(Room)` — zone-level room control |
 
 ---
 
