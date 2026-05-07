@@ -164,23 +164,26 @@ class TestAppQueue:
 class TestQueueItem:
     """QueueItem state machine invariants."""
 
-    # ── construction ─────────────────────────────────────────────────────────
+    # ── construction / factory methods ───────────────────────────────────────
 
     def test_default_state_is_pending(self):
         qi = QueueItem(id="i1", media_item_id="m1")
         assert qi.state == QueueItemState.PENDING
 
-    def test_resolved_state_allowed_at_construction(self):
-        qi = _item(1, QueueItemState.RESOLVED)
-        assert qi.state == QueueItemState.RESOLVED
+    def test_new_pending_factory(self):
+        qi = QueueItem.new_pending("i1", "m1")
+        assert qi.state == QueueItemState.PENDING
+        assert qi.id == "i1"
+        assert qi.media_item_id == "m1"
 
-    def test_playing_state_rejected_at_construction(self):
-        with pytest.raises(ValueError, match="playing"):
-            _item(1, QueueItemState.PLAYING)
+    def test_rehydrate_accepts_any_state(self):
+        for state in QueueItemState:
+            qi = QueueItem.rehydrate("i1", "m1", state)
+            assert qi.state == state
 
-    def test_played_state_rejected_at_construction(self):
-        with pytest.raises(ValueError, match="played"):
-            _item(1, QueueItemState.PLAYED)
+    def test_rehydrate_restores_stream_id(self):
+        qi = QueueItem.rehydrate("i1", "m1", QueueItemState.PLAYED, resolved_stream_id="sess-x")
+        assert qi.resolved_stream_id == "sess-x"
 
     # ── mark_resolved ─────────────────────────────────────────────────────────
 

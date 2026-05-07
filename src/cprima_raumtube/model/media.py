@@ -168,6 +168,10 @@ class QueueItem:
     References the MediaItem by ID to avoid embedding a mutable object graph.
     Resolve via LibraryAggregate.find_item() or System.library.
     State transitions are enforced — use the transition methods, not direct assignment.
+
+    Prefer the factory classmethods for construction:
+      QueueItem.new_pending(id, media_item_id)        — new item not yet resolved
+      QueueItem.rehydrate(id, media_item_id, state)   — persistence reload (any state)
     """
 
     id: str
@@ -175,12 +179,21 @@ class QueueItem:
     resolved_stream_id: str | None = None
     state: QueueItemState = QueueItemState.PENDING
 
-    def __post_init__(self) -> None:
-        if self.state not in {QueueItemState.PENDING, QueueItemState.RESOLVED}:
-            raise ValueError(
-                f"QueueItem cannot be constructed in state {self.state.value!r}; "
-                "use PENDING or RESOLVED"
-            )
+    @classmethod
+    def new_pending(cls, id: str, media_item_id: MediaItemId) -> QueueItem:
+        """Create a new queue item awaiting resolution."""
+        return cls(id=id, media_item_id=media_item_id)
+
+    @classmethod
+    def rehydrate(
+        cls,
+        id: str,
+        media_item_id: MediaItemId,
+        state: QueueItemState = QueueItemState.PENDING,
+        resolved_stream_id: str | None = None,
+    ) -> QueueItem:
+        """Reconstruct a queue item from persisted data; any state is valid."""
+        return cls(id=id, media_item_id=media_item_id, state=state, resolved_stream_id=resolved_stream_id)
 
     def mark_resolved(self, stream_id: str) -> None:
         """PENDING | RESOLVED → RESOLVED; records the HTTP stream session ID."""

@@ -67,6 +67,18 @@ class SubscriptionRenewalState(StrEnum):
     FAILED = "failed"
 
 
+def _expect_sub_state(
+    current: SubscriptionRenewalState,
+    valid: set[SubscriptionRenewalState],
+    operation: str,
+) -> None:
+    if current not in valid:
+        valid_str = ", ".join(sorted(s.value for s in valid))
+        raise ValueError(
+            f"{operation} requires state in {{{valid_str}}}, got {current.value!r}"
+        )
+
+
 @dataclass(slots=True)
 class SubscriptionState:
     """Active GENA event subscription for one service on one renderer.
@@ -78,6 +90,7 @@ class SubscriptionState:
     expires_at      when the subscription lapses if not renewed
     renewal_state   tracks in-flight renewal attempts
     last_renewed_at when the last successful SUBSCRIBE/re-SUBSCRIBE completed
+    failure_reason  last renewal failure message (cleared on successful renew)
     """
 
     sid: str
@@ -87,6 +100,52 @@ class SubscriptionState:
     expires_at: datetime | None = None
     renewal_state: SubscriptionRenewalState = SubscriptionRenewalState.ACTIVE
     last_renewed_at: datetime | None = None
+    failure_reason: str | None = None
+    version: int = 0
+
+    def mark_renewing(self) -> None:
+        """ACTIVE | FAILED → RENEWING (renewal attempt in flight)."""
+        _expect_sub_state(
+            self.renewal_state,
+            {SubscriptionRenewalState.ACTIVE, SubscriptionRenewalState.FAILED},
+            "mark_renewing",
+        )
+        self.renewal_state = SubscriptionRenewalState.RENEWING
+        self.version += 1
+
+    def mark_active(self, expires_at: datetime) -> None:
+        """RENEWING → ACTIVE; records new expiry and renew timestamp."""
+        _expect_sub_state(
+            self.renewal_state,
+            {SubscriptionRenewalState.RENEWING},
+            "mark_active",
+        )
+        self.renewal_state = SubscriptionRenewalState.ACTIVE
+        self.expires_at = expires_at
+        self.last_renewed_at = datetime.now(UTC)
+        self.failure_reason = None
+        self.version += 1
+
+    def mark_expired(self) -> None:
+        """ACTIVE | RENEWING → EXPIRED (TTL elapsed or device gone)."""
+        _expect_sub_state(
+            self.renewal_state,
+            {SubscriptionRenewalState.ACTIVE, SubscriptionRenewalState.RENEWING},
+            "mark_expired",
+        )
+        self.renewal_state = SubscriptionRenewalState.EXPIRED
+        self.version += 1
+
+    def mark_failed(self, reason: str) -> None:
+        """RENEWING | ACTIVE → FAILED; records failure reason."""
+        _expect_sub_state(
+            self.renewal_state,
+            {SubscriptionRenewalState.RENEWING, SubscriptionRenewalState.ACTIVE},
+            "mark_failed",
+        )
+        self.renewal_state = SubscriptionRenewalState.FAILED
+        self.failure_reason = reason
+        self.version += 1
 
 
 @dataclass(slots=True)

@@ -181,7 +181,7 @@ def load_queue(playback: RuntimeAggregate, zone_id: str, cache_dir: Path) -> App
         queue.shuffle_mode = raw.get("shuffle_mode", False)
         queue.queue_end_behavior = raw.get("queue_end_behavior", "stop")
         queue.replace_all([
-            QueueItem(
+            QueueItem.rehydrate(
                 id=qi["id"],
                 media_item_id=qi["media_item_id"],
                 state=QueueItemState(qi.get("state", "pending")),

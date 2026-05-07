@@ -1,8 +1,17 @@
 """Tests for aggregate and registry invariants."""
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
-from cprima_raumtube.model.aggregates import CommandRecord, CommandStatus, RuntimeAggregate, new_id
+from cprima_raumtube.model.aggregates import (
+    CommandRecord,
+    CommandStatus,
+    RuntimeAggregate,
+    SubscriptionRenewalState,
+    SubscriptionState,
+    new_id,
+)
 from cprima_raumtube.model.registry import Installation
 from cprima_raumtube.model.topology import DeviceLifecycle, PhysicalDevice
 
@@ -71,6 +80,125 @@ class TestCommandStatus:
         cr = CommandRecord(id=new_id(), action="Play", target_udn="udn-1")
         assert cr.status == CommandStatus.PENDING
         assert cr.status == "pending"
+
+
+class TestSubscriptionStateTransitions:
+    def _sub(self, state: SubscriptionRenewalState = SubscriptionRenewalState.ACTIVE) -> SubscriptionState:
+        return SubscriptionState(
+            sid="sid-1",
+            renderer_udn="udn-1",
+            service_type="urn:schemas-upnp-org:service:AVTransport:1",
+            callback_url="http://10.0.0.1:8080/notify",
+            renewal_state=state,
+        )
+
+    # ── mark_renewing ─────────────────────────────────────────────────────────
+
+    def test_mark_renewing_from_active(self):
+        sub = self._sub(SubscriptionRenewalState.ACTIVE)
+        sub.mark_renewing()
+        assert sub.renewal_state == SubscriptionRenewalState.RENEWING
+
+    def test_mark_renewing_from_failed(self):
+        sub = self._sub(SubscriptionRenewalState.FAILED)
+        sub.mark_renewing()
+        assert sub.renewal_state == SubscriptionRenewalState.RENEWING
+
+    def test_mark_renewing_invalid_from_expired(self):
+        sub = self._sub(SubscriptionRenewalState.ACTIVE)
+        sub.mark_expired()
+        with pytest.raises(ValueError, match="mark_renewing"):
+            sub.mark_renewing()
+
+    def test_mark_renewing_invalid_from_renewing(self):
+        sub = self._sub(SubscriptionRenewalState.ACTIVE)
+        sub.mark_renewing()
+        with pytest.raises(ValueError, match="mark_renewing"):
+            sub.mark_renewing()
+
+    # ── mark_active ───────────────────────────────────────────────────────────
+
+    def test_mark_active_from_renewing(self):
+        sub = self._sub()
+        sub.mark_renewing()
+        t = datetime.now(UTC) + timedelta(seconds=1800)
+        sub.mark_active(t)
+        assert sub.renewal_state == SubscriptionRenewalState.ACTIVE
+        assert sub.expires_at == t
+        assert sub.last_renewed_at is not None
+
+    def test_mark_active_clears_failure_reason(self):
+        sub = self._sub(SubscriptionRenewalState.FAILED)
+        sub.failure_reason = "network timeout"
+        sub.mark_renewing()
+        sub.mark_active(datetime.now(UTC) + timedelta(seconds=1800))
+        assert sub.failure_reason is None
+
+    def test_mark_active_invalid_from_active(self):
+        sub = self._sub()
+        t = datetime.now(UTC) + timedelta(seconds=1800)
+        with pytest.raises(ValueError, match="mark_active"):
+            sub.mark_active(t)
+
+    # ── mark_expired ──────────────────────────────────────────────────────────
+
+    def test_mark_expired_from_active(self):
+        sub = self._sub()
+        sub.mark_expired()
+        assert sub.renewal_state == SubscriptionRenewalState.EXPIRED
+
+    def test_mark_expired_from_renewing(self):
+        sub = self._sub()
+        sub.mark_renewing()
+        sub.mark_expired()
+        assert sub.renewal_state == SubscriptionRenewalState.EXPIRED
+
+    def test_mark_expired_invalid_from_failed(self):
+        sub = self._sub(SubscriptionRenewalState.FAILED)
+        with pytest.raises(ValueError, match="mark_expired"):
+            sub.mark_expired()
+
+    # ── mark_failed ───────────────────────────────────────────────────────────
+
+    def test_mark_failed_from_renewing(self):
+        sub = self._sub()
+        sub.mark_renewing()
+        sub.mark_failed("connection refused")
+        assert sub.renewal_state == SubscriptionRenewalState.FAILED
+        assert sub.failure_reason == "connection refused"
+
+    def test_mark_failed_from_active(self):
+        sub = self._sub()
+        sub.mark_failed("device rejected subscription")
+        assert sub.renewal_state == SubscriptionRenewalState.FAILED
+
+    def test_mark_failed_invalid_from_expired(self):
+        sub = self._sub()
+        sub.mark_expired()
+        with pytest.raises(ValueError, match="mark_failed"):
+            sub.mark_failed("too late")
+
+    # ── version increment ─────────────────────────────────────────────────────
+
+    def test_each_transition_increments_version(self):
+        sub = self._sub()
+        assert sub.version == 0
+        sub.mark_renewing()
+        assert sub.version == 1
+        sub.mark_active(datetime.now(UTC) + timedelta(seconds=1800))
+        assert sub.version == 2
+        sub.mark_renewing()
+        assert sub.version == 3
+        sub.mark_failed("timeout")
+        assert sub.version == 4
+        sub.mark_renewing()
+        assert sub.version == 5
+        sub.mark_expired()
+        assert sub.version == 6
+
+    def test_initial_version_is_zero(self):
+        sub = self._sub()
+        assert sub.version == 0
 
 
 class TestDeviceLifecycle:
