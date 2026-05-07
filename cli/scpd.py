@@ -26,7 +26,7 @@ def main() -> None:
 
     output = fetch_all(registry)
 
-    for key, info in output.items():
+    for info in output.values():
         svc_type = info["service_type"]
         svc_short = svc_type.split(":")[-2]
         actions = info["actions"]

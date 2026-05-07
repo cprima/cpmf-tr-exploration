@@ -7,12 +7,19 @@ The HTTP server implementation lives in cprima_raumtube.streaming.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from enum import StrEnum
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from cprima_raumtube.model.ids import MediaItemId, StreamSessionId
 
 
-@dataclass
+@dataclass(slots=True)
 class TranscodeProfile:
-    """Audio transcode settings.  Not yet implemented — stub only."""
+    """Audio transcode settings.
+
+    implemented=False marks this as a stub; service code should check before use.
+    """
 
     id: str
     codec: str  # e.g. "mp3", "aac", "opus"
@@ -20,12 +27,18 @@ class TranscodeProfile:
     container: str  # e.g. "mp3", "ogg", "m4a"
     sample_rate_hz: int | None = None
     channels: int | None = None
-
-    def __post_init__(self) -> None:
-        raise NotImplementedError("TranscodeProfile is not yet implemented")
+    implemented: bool = False
 
 
-@dataclass
+class StreamSessionState(StrEnum):
+    STARTING = "starting"
+    ACTIVE = "active"
+    DRAINING = "draining"
+    CLOSED = "closed"
+    FAILED = "failed"
+
+
+@dataclass(slots=True)
 class StreamSession:
     """Descriptor for an active or completed stream delivery.
 
@@ -39,27 +52,31 @@ class StreamSession:
                                    → failed  (from any state)
     """
 
-    id: str
-    media_item_id: str
+    id: StreamSessionId
+    media_item_id: MediaItemId
     mode: Literal["cached_file", "live_pipe", "direct_url"]
     public_url: str
     content_type: str
     seekable: bool
     range_supported: bool
-    state: Literal["starting", "active", "draining", "closed", "failed"] = "starting"
+    state: StreamSessionState = StreamSessionState.STARTING
     local_path: str | None = None
 
     @property
     def is_alive(self) -> bool:
-        return self.state in {"starting", "active", "draining"}
+        return self.state in {
+            StreamSessionState.STARTING,
+            StreamSessionState.ACTIVE,
+            StreamSessionState.DRAINING,
+        }
 
 
-@dataclass
+@dataclass(slots=True)
 class CacheEntry:
     """A fully downloaded and transcoded file on local disk."""
 
     id: str
-    media_item_id: str
+    media_item_id: MediaItemId
     path: str
     content_type: str
     size_bytes: int

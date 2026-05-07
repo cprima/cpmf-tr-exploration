@@ -1,8 +1,8 @@
-"""Persistent cache index — MediaItem, CacheEntry, and Queue serialization.
+"""Persistent cache index — MediaItem, CacheEntry, and AppQueue serialization.
 
 MediaResolution is intentionally excluded (ephemeral; expires within hours).
 CacheEntry.path is validated on load; entries for missing files are dropped.
-Queue state (items + current_index) survives across CLI invocations.
+AppQueue state (items + current_index) survives across CLI invocations.
 """
 
 from __future__ import annotations
@@ -10,10 +10,13 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from cprima_raumtube.model.aggregates import LibraryAggregate, PlaybackAggregate  # noqa: F401
-from cprima_raumtube.model.media import Library, MediaItem, Queue, QueueItem
+from cprima_raumtube.model.media import AppQueue, Library, MediaItem, QueueItem, QueueItemState
 from cprima_raumtube.model.streaming import CacheEntry
+
+if TYPE_CHECKING:
+    from cprima_raumtube.model.aggregates import LibraryAggregate, RuntimeAggregate
 
 _log = logging.getLogger(__name__)
 
@@ -29,36 +32,34 @@ def _index_path(cache_dir: Path) -> Path:
 def save_index(library: LibraryAggregate, cache_dir: Path) -> None:
     """Serialize MediaItems and CacheEntries to cache_dir/index.json."""
     cache_dir.mkdir(parents=True, exist_ok=True)
-    items = []
-    for lib in library.libraries.values():
-        for item in lib.items.values():
-            items.append(
-                {
-                    "id": item.id,
-                    "source_id": item.source_id,
-                    "title": item.title,
-                    "canonical_id": item.canonical_id,
-                    "source_locator": item.source_locator,
-                    "media_type": item.media_type,
-                    "duration_seconds": item.duration_seconds,
-                    "content_type": item.content_type,
-                    "seekable": item.seekable,
-                    "uploader": item.uploader,
-                    "thumbnail_uri": item.thumbnail_uri,
-                }
-            )
-    entries = []
-    for entry in library.cache_entries.values():
-        entries.append(
-            {
-                "id": entry.id,
-                "media_item_id": entry.media_item_id,
-                "path": str(entry.path),
-                "content_type": entry.content_type,
-                "size_bytes": entry.size_bytes,
-                "duration_seconds": entry.duration_seconds,
-            }
-        )
+    items = [
+        {
+            "id": item.id,
+            "source_id": item.source_id,
+            "title": item.title,
+            "canonical_id": item.canonical_id,
+            "source_locator": item.source_locator,
+            "media_type": item.media_type,
+            "duration_seconds": item.duration_seconds,
+            "content_type": item.content_type,
+            "seekable": item.seekable,
+            "uploader": item.uploader,
+            "thumbnail_uri": item.thumbnail_uri,
+        }
+        for lib in library.libraries.values()
+        for item in lib.items.values()
+    ]
+    entries = [
+        {
+            "id": entry.id,
+            "media_item_id": entry.media_item_id,
+            "path": str(entry.path),
+            "content_type": entry.content_type,
+            "size_bytes": entry.size_bytes,
+            "duration_seconds": entry.duration_seconds,
+        }
+        for entry in library.cache_entries.values()
+    ]
     payload = {"version": _INDEX_VERSION, "media_items": items, "cache_entries": entries}
     path = _index_path(cache_dir)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -127,7 +128,7 @@ def load_index(library: LibraryAggregate, cache_dir: Path) -> None:
     )
 
 
-# ── Queue persistence ─────────────────────────────────────────────────────────
+# ── AppQueue persistence ─────────────────────────────────────────────────────────
 
 _QUEUES_FILE = "queues.json"
 _QUEUES_VERSION = 1
@@ -137,7 +138,7 @@ def _queues_path(cache_dir: Path) -> Path:
     return cache_dir / _QUEUES_FILE
 
 
-def save_queue(queue: Queue, cache_dir: Path) -> None:
+def save_queue(queue: AppQueue, cache_dir: Path) -> None:
     """Persist a single zone queue to cache_dir/queues.json (merge with existing zones)."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = _queues_path(cache_dir)
@@ -163,7 +164,7 @@ def save_queue(queue: Queue, cache_dir: Path) -> None:
     _log.debug("queue saved: zone=%s %d items", queue.zone_id, len(queue.items))
 
 
-def load_queue(playback: PlaybackAggregate, zone_id: str, cache_dir: Path) -> Queue:
+def load_queue(playback: RuntimeAggregate, zone_id: str, cache_dir: Path) -> AppQueue:
     """Load (or create) the persisted queue for zone_id into playback aggregate."""
     path = _queues_path(cache_dir)
     queue = playback.get_or_create_queue(zone_id)
@@ -179,14 +180,14 @@ def load_queue(playback: PlaybackAggregate, zone_id: str, cache_dir: Path) -> Qu
         queue.repeat_mode = raw.get("repeat_mode", "off")
         queue.shuffle_mode = raw.get("shuffle_mode", False)
         queue.queue_end_behavior = raw.get("queue_end_behavior", "stop")
-        queue.items = [
+        queue.replace_all([
             QueueItem(
                 id=qi["id"],
                 media_item_id=qi["media_item_id"],
-                state=qi.get("state", "pending"),
+                state=QueueItemState(qi.get("state", "pending")),
             )
             for qi in raw.get("items", [])
-        ]
+        ])
         _log.debug("queue loaded: zone=%s %d items", zone_id, len(queue.items))
     except Exception as exc:
         _log.warning("could not read queue for zone %s: %s", zone_id, exc)

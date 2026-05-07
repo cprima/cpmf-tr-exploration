@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 youtube = ["yt-dlp>=2024.0.0"]
-dev     = ["pytest>=8.0", "ruff>=0.4"]
+dev     = ["pytest>=8.0", "ruff>=0.9", "mypy>=1.10", "hypothesis>=6.100"]
 
 [project.scripts]
 raumtube-discover = "cli.discover:main"
@@ -22,21 +22,35 @@ raumtube-play     = "cli.play:main"
 raumtube-enqueue  = "cli.enqueue:main"
 raumtube-dequeue  = "cli.dequeue:main"
 raumtube-scpd     = "cli.scpd:main"
+raumtube-model    = "cli.model:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cprima_raumtube", "cli"]
 
 [dependency-groups]
-dev = ["pytest>=8.0", "ruff>=0.4"]
+dev = ["pytest>=8.0", "ruff>=0.9", "mypy>=1.10", "hypothesis>=6.100"]
 
 [tool.ruff]
+target-version = "py312"
 line-length = 100
-target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP"]
-ignore = ["E501"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "RUF", "PIE", "RET", "ARG", "DTZ", "TCH", "PERF"]
+ignore = ["E501", "B008", "RUF022"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
 
 [tool.ruff.format]
 quote-style = "double"
-indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+disallow_any_generics = true
+no_implicit_optional = true
+strict_equality = true
+exclude = ["^\\.venv/", "^build/"]

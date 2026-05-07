@@ -5,7 +5,7 @@ import argparse
 from cprima_raumtube._compat import ensure_utf8_stdout
 from cprima_raumtube.config import load_config
 from cprima_raumtube.devices import get_zone
-from cprima_raumtube.model.aggregates import System
+from cprima_raumtube.model.registry import Installation
 from cprima_raumtube.services import (
     PlaybackManager,
     QueueManager,
@@ -61,13 +61,13 @@ def main() -> None:
     renderer = Renderer.from_zone(zone)
     print(f"Zone   : {zone['friendly_name']} ({zone.get('model', '?')})")
 
-    system = System()
-    load_index(system.library, cfg.cache_dir)
-    load_queue(system.playback, zone_id, cfg.cache_dir)
+    installation = Installation.ephemeral()
+    load_index(installation.library, cfg.cache_dir)
+    load_queue(installation.state, zone_id, cfg.cache_dir)
 
     sm = StreamManager(args.local_ip, args.port)
-    qm = QueueManager(system, cfg)
-    pm = PlaybackManager(system, renderer, qm, sm)
+    qm = QueueManager(installation, cfg)
+    pm = PlaybackManager(installation, renderer, qm, sm)
 
     if args.url:
         mode = "live" if args.live else "auto"
@@ -76,10 +76,10 @@ def main() -> None:
         if item.duration_seconds:
             from cprima_raumtube.didl import _fmt_dur
             print(f"Duration: {_fmt_dur(item.duration_seconds)}")
-        queue = system.playback.get_or_create_queue(zone_id)
+        queue = installation.state.get_or_create_queue(zone_id)
         save_queue(queue, cfg.cache_dir)
     else:
-        queue = system.playback.get_or_create_queue(zone_id)
+        queue = installation.state.get_or_create_queue(zone_id)
         if not queue.items:
             ap.error("Queue is empty — provide a URL or use 'raumtube-enqueue' first")
         print(f"Queue  : {len(queue.items)} item(s)")
@@ -92,13 +92,12 @@ def main() -> None:
     pm.play_current(zone_id)
 
     if args.no_autoplay:
-        try:
+        import contextlib
+        with contextlib.suppress(KeyboardInterrupt):
             input("\nPress Enter to stop …")
-        except KeyboardInterrupt:
-            pass
         pm.stop(zone_id)
     else:
-        def _on_change(uri: str, reason: object) -> None:
+        def _on_change(_uri: str, reason: object) -> None:
             if reason:
                 print(f"\n  [{reason}]  advancing queue …")
 

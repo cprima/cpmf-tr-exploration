@@ -13,13 +13,16 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 
 from cprima_raumtube.didl import build_didl
+from cprima_raumtube.model.media import QueueItemState
+from cprima_raumtube.model.playback import PlaybackSessionState
 
 if TYPE_CHECKING:
-    from cprima_raumtube.model.aggregates import System
+    from collections.abc import Callable
+
+    from cprima_raumtube.model.registry import Installation
     from cprima_raumtube.services.queue_manager import QueueManager
     from cprima_raumtube.services.stream_manager import StreamManager
     from cprima_raumtube.upnp.transport import Renderer
@@ -32,12 +35,12 @@ StopReason = Literal["natural_end", "manual_stop", "error", "skip"]
 class PlaybackManager:
     def __init__(
         self,
-        system: System,
+        installation: Installation,
         renderer: Renderer,
         queue_manager: QueueManager,
         stream_manager: StreamManager,
     ) -> None:
-        self._system = system
+        self._installation = installation
         self._renderer = renderer
         self._qm = queue_manager
         self._sm = stream_manager
@@ -46,12 +49,12 @@ class PlaybackManager:
 
     def play_current(self, zone_id: str) -> None:
         """Resolve current queue item → start stream → set_uri + play."""
-        queue = self._system.playback.get_or_create_queue(zone_id)
+        queue = self._installation.state.get_or_create_queue(zone_id)
         qi = queue.current_item
         if qi is None:
             raise RuntimeError(f"Queue for zone {zone_id!r} is empty or has no current item")
 
-        media_item = self._system.library.find_item(qi.media_item_id)
+        media_item = self._installation.library.find_item(qi.media_item_id)
         if media_item is None:
             raise KeyError(f"MediaItem {qi.media_item_id!r} not in library")
 
@@ -67,7 +70,7 @@ class PlaybackManager:
             session = self._sm.start_live(str(source))
 
         session.media_item_id = media_item.id
-        self._system.playback.stream_sessions[session.id] = session
+        self._installation.state.stream_sessions[session.id] = session
 
         # Build DIDL metadata
         live = mode == "live_pipe"
@@ -84,11 +87,11 @@ class PlaybackManager:
         self._renderer.play()
 
         # Update model state
-        ps = self._system.playback.get_or_create_playback_session(zone_id)
-        ps.state = "starting"
+        ps = self._installation.state.get_or_create_playback_session(zone_id)
+        ps.state = PlaybackSessionState.STARTING
         ps.current_item_id = qi.media_item_id
         ps.stream_session_id = session.id
-        qi.state = "playing"
+        qi.state = QueueItemState.PLAYING
         qi.resolved_stream_id = session.id
 
         _log.info(
@@ -106,32 +109,32 @@ class PlaybackManager:
         except Exception as exc:
             _log.warning("[play] renderer stop error: %s", exc)
 
-        ps = self._system.playback.get_playback_session(zone_id)
+        ps = self._installation.state.get_playback_session(zone_id)
         if ps is not None:
             if ps.stream_session_id:
                 self._sm.stop(ps.stream_session_id)
                 ps.stream_session_id = None
-            ps.state = "stopped"
+            ps.state = PlaybackSessionState.STOPPED
 
         # Mark current queue item as played/failed
-        queue = self._system.playback.get_or_create_queue(zone_id)
+        queue = self._installation.state.get_or_create_queue(zone_id)
         qi = queue.current_item
-        if qi is not None and qi.state == "playing":
-            qi.state = "played" if reason == "natural_end" else qi.state
+        if qi is not None and qi.state == QueueItemState.PLAYING:
+            qi.state = QueueItemState.PLAYED if reason == "natural_end" else qi.state
 
         _log.info("[play] zone=%s stopped  reason=%s", zone_id, reason)
 
     def pause(self, zone_id: str) -> None:
         self._renderer.pause()
-        ps = self._system.playback.get_playback_session(zone_id)
+        ps = self._installation.state.get_playback_session(zone_id)
         if ps:
-            ps.state = "paused"
+            ps.state = PlaybackSessionState.PAUSED
 
     def resume(self, zone_id: str) -> None:
         self._renderer.play()
-        ps = self._system.playback.get_playback_session(zone_id)
+        ps = self._installation.state.get_playback_session(zone_id)
         if ps:
-            ps.state = "playing"
+            ps.state = PlaybackSessionState.PLAYING
 
     def advance_and_play(self, zone_id: str) -> bool:
         """stop(skip) → skip_next → play_current. Returns True if started, False if exhausted."""
@@ -156,7 +159,7 @@ class PlaybackManager:
         seen in PLAYING state. When STOPPED with the same URI → natural end.
         When STOPPED with a different URI → external/manual stop → exit.
         """
-        queue = self._system.playback.get_or_create_queue(zone_id)
+        queue = self._installation.state.get_or_create_queue(zone_id)
         last_playing_uri: str | None = None
         last_state: str = ""
 

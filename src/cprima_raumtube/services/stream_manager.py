@@ -8,9 +8,12 @@ current constraint (single-zone scope).
 from __future__ import annotations
 
 import logging
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from cprima_raumtube.model.aggregates import new_id
+
+if TYPE_CHECKING:
+    from pathlib import Path
 from cprima_raumtube.model.streaming import StreamSession
 from cprima_raumtube.streaming import CachedStreamSession, LiveStreamSession
 

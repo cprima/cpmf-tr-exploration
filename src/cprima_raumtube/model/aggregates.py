@@ -1,9 +1,9 @@
-"""Aggregate roots — bounded contexts within one Installation/System.
+"""Aggregate roots -- bounded contexts within one Installation.
 
-TopologyAggregate   physical devices, zones, renderers, protocol snapshots
-LibraryAggregate    media items, playlists, resolutions, cache entries
-PlaybackAggregate   queues, stream sessions, playback sessions, event log
-System              thin facade holding all three aggregates
+DeviceInventory    slow-moving: physical devices, renderers, protocol snapshots
+TopologyState      volatile: zones, groups, coordinator membership
+LibraryAggregate   media items, playlists, resolutions, cache entries
+RuntimeAggregate   per-zone queues, sessions, device state, event log
 """
 
 from __future__ import annotations
@@ -11,19 +11,34 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
-from cprima_raumtube.model.events import AnyEvent
-from cprima_raumtube.model.media import (
-    Library,
-    MediaItem,
-    MediaResolution,
-    Playlist,
-    Queue,
-)
-from cprima_raumtube.model.playback import PlaybackSession
-from cprima_raumtube.model.protocol import ProtocolSnapshot
-from cprima_raumtube.model.streaming import CacheEntry, StreamSession
-from cprima_raumtube.model.topology import Group, PhysicalDevice, Room, Zone, ZoneRenderer
+from cprima_raumtube.model.media import AppQueue
+from cprima_raumtube.model.playback import PlaybackSession, ZoneRuntimeState
+
+if TYPE_CHECKING:
+    from cprima_raumtube.model.events import AnyEvent
+    from cprima_raumtube.model.ids import (
+        GroupId,
+        PhysicalDeviceUdn,
+        QueueId,
+        RendererUdn,
+        RoomId,
+        ServiceType,
+        StreamSessionId,
+        ZoneId,
+    )
+    from cprima_raumtube.model.media import (
+        DeviceQueueSnapshot,
+        Library,
+        MediaItem,
+        MediaResolution,
+        Playlist,
+    )
+    from cprima_raumtube.model.protocol import ProtocolSnapshot
+    from cprima_raumtube.model.streaming import CacheEntry, StreamSession
+    from cprima_raumtube.model.topology import Group, PhysicalDevice, Room, Zone, ZoneRenderer
 
 
 def new_id() -> str:
@@ -31,19 +46,102 @@ def new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-# ── Topology ──────────────────────────────────────────────────────────────────
+class CommandStatus(StrEnum):
+    """Lifecycle states for a CommandRecord.
+
+    StrEnum so values compare equal to plain strings (backward compatible)
+    while giving enum safety for mypy and IDE autocomplete.
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
 
 
-@dataclass
-class TopologyAggregate:
-    """Physical hardware, logical zones, and raw protocol snapshots."""
+class SubscriptionRenewalState(StrEnum):
+    ACTIVE = "active"
+    RENEWING = "renewing"
+    EXPIRED = "expired"
+    FAILED = "failed"
 
-    physical_devices: dict[str, PhysicalDevice] = field(default_factory=dict)
-    rooms: dict[str, Room] = field(default_factory=dict)
-    zones: dict[str, Zone] = field(default_factory=dict)
-    zone_renderers: dict[str, ZoneRenderer] = field(default_factory=dict)
-    groups: dict[str, Group] = field(default_factory=dict)
+
+@dataclass(slots=True)
+class SubscriptionState:
+    """Active GENA event subscription for one service on one renderer.
+
+    Operational runtime state — not raw protocol description.
+
+    sid             subscription ID returned by the device in SUBSCRIBE response
+    callback_url    local HTTP endpoint the device posts events to
+    expires_at      when the subscription lapses if not renewed
+    renewal_state   tracks in-flight renewal attempts
+    last_renewed_at when the last successful SUBSCRIBE/re-SUBSCRIBE completed
+    """
+
+    sid: str
+    renderer_udn: RendererUdn
+    service_type: ServiceType
+    callback_url: str
+    expires_at: datetime | None = None
+    renewal_state: SubscriptionRenewalState = SubscriptionRenewalState.ACTIVE
+    last_renewed_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class DiscoverySnapshot:
+    """Point-in-time record of one discovery pass across the network.
+
+    Captures which UDNs were visible and what topology XML was retrieved,
+    providing a reproducible baseline for debugging and capability replay.
+    """
+
+    id: str
+    captured_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    device_udns: list[str] = field(default_factory=list)
+    topology_xml: str | None = None
+    notes: str | None = None
+
+
+@dataclass(slots=True)
+class CommandRecord:
+    """Audit log entry for one SOAP action sent to a renderer.
+
+    status lifecycle: pending → running → succeeded | failed | timed_out
+    soap_fault_* populated on UPnP protocol errors.
+    network_error populated on connection/timeout failures before SOAP response.
+    """
+
+    id: str
+    action: str
+    target_udn: RendererUdn
+    zone_id: ZoneId | None = None
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    finished_at: datetime | None = None
+    status: CommandStatus = CommandStatus.PENDING
+    soap_fault_code: str | None = None
+    soap_fault_description: str | None = None
+    network_error: str | None = None
+    details: dict[str, str] = field(default_factory=dict)
+
+
+# -- Device Inventory ---------------------------------------------------------
+
+
+@dataclass(slots=True)
+class DeviceInventory:
+    """Slow-moving discovered hardware, renderers, services, and protocol evidence.
+
+    Changes only when devices are added, removed, or re-probed -- not during
+    normal zone/group topology changes.
+    """
+
+    physical_devices: dict[PhysicalDeviceUdn, PhysicalDevice] = field(default_factory=dict)
+    rooms: dict[RoomId, Room] = field(default_factory=dict)
+    zone_renderers: dict[RendererUdn, ZoneRenderer] = field(default_factory=dict)
     protocol_snapshots: list[ProtocolSnapshot] = field(default_factory=list)
+    discovery_snapshots: list[DiscoverySnapshot] = field(default_factory=list)
 
     def register_device(self, device: PhysicalDevice) -> None:
         self.physical_devices[device.udn] = device
@@ -54,20 +152,41 @@ class TopologyAggregate:
     def add_snapshot(self, snapshot: ProtocolSnapshot) -> None:
         self.protocol_snapshots.append(snapshot)
 
-    def get_zone(self, zone_id: str) -> Zone:
+    def get_renderer(self, udn: RendererUdn) -> ZoneRenderer:
+        try:
+            return self.zone_renderers[udn]
+        except KeyError:
+            raise KeyError(f"No ZoneRenderer with UDN {udn!r}") from None
+
+
+# -- Topology State -----------------------------------------------------------
+
+
+@dataclass(slots=True)
+class TopologyState:
+    """Volatile zone and group membership -- may change at runtime.
+
+    A zone can gain or lose members; groups form and dissolve.
+    Distinct from DeviceInventory which tracks the underlying hardware.
+    """
+
+    zones: dict[ZoneId, Zone] = field(default_factory=dict)
+    groups: dict[GroupId, Group] = field(default_factory=dict)
+    topology_epoch: int = 0
+
+    def add_zone(self, zone: Zone) -> None:
+        self.zones[zone.id] = zone
+        self.topology_epoch += 1
+
+    def add_group(self, group: Group) -> None:
+        self.groups[group.id] = group
+        self.topology_epoch += 1
+
+    def get_zone(self, zone_id: ZoneId) -> Zone:
         try:
             return self.zones[zone_id]
         except KeyError:
             raise KeyError(f"Zone {zone_id!r} not found") from None
-
-    def get_renderer_for_zone(self, zone_id: str) -> ZoneRenderer:
-        zone = self.get_zone(zone_id)
-        try:
-            return self.zone_renderers[zone.renderer_udn]
-        except KeyError:
-            raise KeyError(
-                f"No ZoneRenderer for zone {zone_id!r} (renderer UDN: {zone.renderer_udn!r})"
-            ) from None
 
     def find_zone_by_name(self, name: str) -> Zone | None:
         for z in self.zones.values():
@@ -79,10 +198,10 @@ class TopologyAggregate:
         return None
 
 
-# ── Library ───────────────────────────────────────────────────────────────────
+# -- Library ------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(slots=True)
 class LibraryAggregate:
     """Media items, playlists, resolutions, and local cache."""
 
@@ -120,33 +239,42 @@ class LibraryAggregate:
         self.resolutions[resolution.id] = resolution
 
 
-# ── Playback ──────────────────────────────────────────────────────────────────
+# -- Runtime ------------------------------------------------------------------
 
 
-@dataclass
-class PlaybackAggregate:
-    """Per-zone queues, stream sessions, playback sessions, and event log."""
+@dataclass(slots=True)
+class RuntimeAggregate:
+    """Per-zone runtime state -- device state, queues, sessions, and event log."""
 
-    queues: dict[str, Queue] = field(default_factory=dict)
-    stream_sessions: dict[str, StreamSession] = field(default_factory=dict)
+    zone_states: dict[ZoneId, ZoneRuntimeState] = field(default_factory=dict)
+    queues: dict[QueueId, AppQueue] = field(default_factory=dict)
+    device_queue_snapshots: dict[str, DeviceQueueSnapshot] = field(default_factory=dict)
+    stream_sessions: dict[StreamSessionId, StreamSession] = field(default_factory=dict)
     playback_sessions: dict[str, PlaybackSession] = field(default_factory=dict)
     event_log: list[AnyEvent] = field(default_factory=list)
+    command_log: list[CommandRecord] = field(default_factory=list)
+    subscriptions: dict[str, SubscriptionState] = field(default_factory=dict)
 
-    def get_or_create_queue(self, zone_id: str) -> Queue:
+    def get_or_create_zone_state(self, zone_id: ZoneId) -> ZoneRuntimeState:
+        if zone_id not in self.zone_states:
+            self.zone_states[zone_id] = ZoneRuntimeState(zone_id=zone_id)
+        return self.zone_states[zone_id]
+
+    def get_or_create_queue(self, zone_id: ZoneId) -> AppQueue:
         for q in self.queues.values():
             if q.zone_id == zone_id:
                 return q
-        q = Queue(id=new_id(), zone_id=zone_id)
+        q = AppQueue(id=new_id(), zone_id=zone_id)
         self.queues[q.id] = q
         return q
 
-    def get_playback_session(self, zone_id: str) -> PlaybackSession | None:
+    def get_playback_session(self, zone_id: ZoneId) -> PlaybackSession | None:
         for ps in self.playback_sessions.values():
             if ps.zone_id == zone_id:
                 return ps
         return None
 
-    def get_or_create_playback_session(self, zone_id: str) -> PlaybackSession:
+    def get_or_create_playback_session(self, zone_id: ZoneId) -> PlaybackSession:
         ps = self.get_playback_session(zone_id)
         if ps is None:
             ps = PlaybackSession(id=new_id(), zone_id=zone_id)
@@ -156,60 +284,9 @@ class PlaybackAggregate:
     def emit(self, event: AnyEvent) -> None:
         self.event_log.append(event)
 
-    def events_for_zone(self, zone_id: str) -> list[AnyEvent]:
+    def events_for_zone(self, zone_id: ZoneId) -> list[AnyEvent]:
         return [
             e
             for e in self.event_log
             if hasattr(e, "zone_id") and e.zone_id == zone_id  # type: ignore[union-attr]
         ]
-
-
-# ── System (thin facade) ─────────────────────────────────────────────────────
-
-
-@dataclass
-class System:
-    """One Raumfeld installation on one LAN.
-
-    Delegates to three aggregate roots; callers should prefer addressing
-    the aggregates directly for non-trivial operations.
-    """
-
-    topology: TopologyAggregate = field(default_factory=TopologyAggregate)
-    library: LibraryAggregate = field(default_factory=LibraryAggregate)
-    playback: PlaybackAggregate = field(default_factory=PlaybackAggregate)
-
-    # ── Topology pass-throughs ────────────────────────────────────────────────
-
-    def register_device(self, device: PhysicalDevice) -> None:
-        self.topology.register_device(device)
-
-    def register_zone_renderer(self, renderer: ZoneRenderer) -> None:
-        self.topology.register_zone_renderer(renderer)
-
-    def get_zone(self, zone_id: str) -> Zone:
-        return self.topology.get_zone(zone_id)
-
-    def get_renderer_for_zone(self, zone_id: str) -> ZoneRenderer:
-        return self.topology.get_renderer_for_zone(zone_id)
-
-    # ── Library pass-throughs ─────────────────────────────────────────────────
-
-    def get_fresh_resolution(
-        self, media_item_id: str, now: datetime | None = None
-    ) -> MediaResolution | None:
-        return self.library.get_fresh_resolution(media_item_id, now)
-
-    # ── Playback pass-throughs ────────────────────────────────────────────────
-
-    def get_or_create_queue(self, zone_id: str) -> Queue:
-        return self.playback.get_or_create_queue(zone_id)
-
-    def get_or_create_playback_session(self, zone_id: str) -> PlaybackSession:
-        return self.playback.get_or_create_playback_session(zone_id)
-
-    def emit(self, event: AnyEvent) -> None:
-        self.playback.emit(event)
-
-    def events_for_zone(self, zone_id: str) -> list[AnyEvent]:
-        return self.playback.events_for_zone(zone_id)

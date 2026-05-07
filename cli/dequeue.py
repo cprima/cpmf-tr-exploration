@@ -5,17 +5,17 @@ import argparse
 from cprima_raumtube._compat import ensure_utf8_stdout
 from cprima_raumtube.config import load_config
 from cprima_raumtube.devices import get_zone
-from cprima_raumtube.model.aggregates import System
+from cprima_raumtube.model.registry import Installation
 from cprima_raumtube.services import clear_queue, load_index, load_queue, save_queue
 
 
-def _print_queue(system: System, zone_id: str) -> None:
-    queue = system.playback.get_or_create_queue(zone_id)
+def _print_queue(installation: Installation, zone_id: str) -> None:
+    queue = installation.state.get_or_create_queue(zone_id)
     if not queue.items:
         print("  (queue empty)")
         return
     for i, qi in enumerate(queue.items):
-        item = system.library.find_item(qi.media_item_id)
+        item = installation.library.find_item(qi.media_item_id)
         title = item.title if item else qi.media_item_id
         marker = "▶" if i == queue.current_index else " "
         print(f"  {marker} [{i}] {title}")
@@ -41,15 +41,14 @@ def main() -> None:
     zone_id = zone["udn"]
     print(f"Zone   : {zone['friendly_name']}")
 
-    system = System()
-    load_index(system.library, cfg.cache_dir)
-    load_queue(system.playback, zone_id, cfg.cache_dir)
+    installation = Installation.ephemeral()
+    load_index(installation.library, cfg.cache_dir)
+    load_queue(installation.state, zone_id, cfg.cache_dir)
 
-    queue = system.playback.get_or_create_queue(zone_id)
+    queue = installation.state.get_or_create_queue(zone_id)
 
     if args.index is None:
-        queue.items.clear()
-        queue.current_index = None
+        queue.clear()
         clear_queue(zone_id, cfg.cache_dir)
         print("Queue cleared.")
         return
@@ -58,24 +57,14 @@ def main() -> None:
     if idx < 0 or idx >= len(queue.items):
         ap.error(f"Index {idx} out of range (queue has {len(queue.items)} items)")
 
-    removed = queue.items.pop(idx)
-    item = system.library.find_item(removed.media_item_id)
+    removed = queue.remove_at(idx)
+    item = installation.library.find_item(removed.media_item_id)
     print(f"Removed: {item.title if item else removed.media_item_id}")
-
-    # Adjust current_index after removal
-    if queue.current_index is not None:
-        if queue.current_index > idx:
-            queue.current_index -= 1
-        elif queue.current_index == idx:
-            queue.current_index = idx if idx < len(queue.items) else None
-
-    if not queue.items:
-        queue.current_index = None
 
     save_queue(queue, cfg.cache_dir)
 
     print(f"\nQueue ({zone['friendly_name']}):")
-    _print_queue(system, zone_id)
+    _print_queue(installation, zone_id)
 
 
 if __name__ == "__main__":

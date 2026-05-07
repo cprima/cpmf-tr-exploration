@@ -20,12 +20,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from cprima_raumtube.model.aggregates import LibraryAggregate, new_id
-from cprima_raumtube.model.media import Library, MediaItem, QueueItem
+from cprima_raumtube.model.media import Library, MediaItem, QueueItem, QueueItemState
 from cprima_raumtube.model.streaming import CacheEntry
 
 if TYPE_CHECKING:
     from cprima_raumtube.config import Config
-    from cprima_raumtube.model.aggregates import System
+    from cprima_raumtube.model.registry import Installation
 
 _log = logging.getLogger(__name__)
 
@@ -55,8 +55,8 @@ def _ensure_default_lib(library: LibraryAggregate) -> Library:
 
 
 class QueueManager:
-    def __init__(self, system: System, config: Config) -> None:
-        self._system = system
+    def __init__(self, installation: Installation, config: Config) -> None:
+        self._installation = installation
         self._config = config
 
     # ── Enqueue ───────────────────────────────────────────────────────────────
@@ -70,10 +70,10 @@ class QueueManager:
     ) -> MediaItem:
         """Probe URL → create/find MediaItem → append QueueItem. Returns MediaItem."""
         canonical = _canonical_id(source_url)
-        lib = _ensure_default_lib(self._system.library)
+        lib = _ensure_default_lib(self._installation.library)
 
         # Check if already in library
-        item = self._system.library.find_by_canonical(canonical)
+        item = self._installation.library.find_by_canonical(canonical)
 
         if item is None:
             item = self._probe_and_create(source_url, canonical, lib, mode)
@@ -83,14 +83,12 @@ class QueueManager:
             self._ensure_cached(source_url, item)
 
         # Build QueueItem
-        queue = self._system.playback.get_or_create_queue(zone_id)
+        queue = self._installation.state.get_or_create_queue(zone_id)
         if replace:
             queue.clear()
 
-        qi = QueueItem(id=new_id(), media_item_id=item.id, state="resolved")
-        queue.append(qi)
-        if queue.current_index is None:
-            queue.current_index = 0
+        qi = QueueItem(id=new_id(), media_item_id=item.id, state=QueueItemState.RESOLVED)
+        queue.enqueue(qi)
 
         _log.info(
             "[queue] enqueued %r (zone=%s index=%s)", item.title, zone_id, queue.current_index
@@ -141,7 +139,7 @@ class QueueManager:
 
     def _ensure_cached(self, source_url: str, item: MediaItem) -> None:
         """Download to cache if not already present. Updates library.cache_entries."""
-        for entry in self._system.library.cache_entries.values():
+        for entry in self._installation.library.cache_entries.values():
             if entry.media_item_id == item.id and Path(entry.path).exists():
                 _log.info("[queue] cache hit: %s", entry.path)
                 return
@@ -160,8 +158,8 @@ class QueueManager:
             size_bytes=path.stat().st_size,
             duration_seconds=info.get("duration"),
         )
-        self._system.library.cache_entries[entry.id] = entry
-        cache_service.save_index(self._system.library, self._config.cache_dir)
+        self._installation.library.cache_entries[entry.id] = entry
+        cache_service.save_index(self._installation.library, self._config.cache_dir)
         _log.info("[queue] cached: %s (%.1f MB)", path.name, path.stat().st_size / 1_048_576)
 
     # ── Resolution ────────────────────────────────────────────────────────────
@@ -174,12 +172,12 @@ class QueueManager:
         cached_file → (Path to MP3 on disk, "cached_file")
         live_pipe   → (source URL, "live_pipe")
         """
-        media_item = self._system.library.find_item(queue_item.media_item_id)
+        media_item = self._installation.library.find_item(queue_item.media_item_id)
         if media_item is None:
             raise KeyError(f"MediaItem {queue_item.media_item_id!r} not found in library")
 
         # Check cache first
-        for entry in self._system.library.cache_entries.values():
+        for entry in self._installation.library.cache_entries.values():
             if entry.media_item_id == media_item.id:
                 p = Path(entry.path)
                 if p.exists():
@@ -191,36 +189,21 @@ class QueueManager:
     # ── Navigation ────────────────────────────────────────────────────────────
 
     def skip_next(self, zone_id: str) -> QueueItem | None:
-        queue = self._system.playback.get_or_create_queue(zone_id)
-        if not queue.items or queue.current_index is None:
-            return None
-        if queue.repeat_mode == "one":
-            return queue.current_item
-        if queue.current_index < len(queue.items) - 1:
-            queue.current_index += 1
-            return queue.current_item
-        if queue.repeat_mode == "all":
-            queue.current_index = 0
-            return queue.current_item
-        return None
+        queue = self._installation.state.get_or_create_queue(zone_id)
+        return queue.advance()
 
     def skip_previous(self, zone_id: str) -> QueueItem | None:
-        queue = self._system.playback.get_or_create_queue(zone_id)
-        if not queue.items or queue.current_index is None:
-            return None
-        if queue.current_index > 0:
-            queue.current_index -= 1
-            return queue.current_item
-        return None
+        queue = self._installation.state.get_or_create_queue(zone_id)
+        return queue.rewind()
 
     def clear(self, zone_id: str) -> None:
-        queue = self._system.playback.get_or_create_queue(zone_id)
+        queue = self._installation.state.get_or_create_queue(zone_id)
         queue.clear()
 
     # ── Mode flags ────────────────────────────────────────────────────────────
 
     def set_repeat(self, zone_id: str, mode: Literal["off", "one", "all"]) -> None:
-        self._system.playback.get_or_create_queue(zone_id).repeat_mode = mode
+        self._installation.state.get_or_create_queue(zone_id).repeat_mode = mode
 
     def set_shuffle(self, zone_id: str, on: bool) -> None:
-        self._system.playback.get_or_create_queue(zone_id).shuffle_mode = on
+        self._installation.state.get_or_create_queue(zone_id).shuffle_mode = on

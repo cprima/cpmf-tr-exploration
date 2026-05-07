@@ -3,15 +3,41 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Literal
+from datetime import UTC, datetime
+from enum import StrEnum
+from typing import TYPE_CHECKING, Literal
 
-# Playback mode flags for Queue
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from cprima_raumtube.model.ids import MediaItemId, QueueId, ZoneId
+
 QueueOrigin = Literal["ad_hoc", "playlist", "radio", "autoplay"]
 QueueEndBehavior = Literal["stop", "clear", "idle"]
 
 
-@dataclass
+class QueueItemState(StrEnum):
+    PENDING = "pending"
+    RESOLVED = "resolved"
+    PLAYING = "playing"
+    PLAYED = "played"
+    FAILED = "failed"
+
+
+class InsertMode(StrEnum):
+    APPEND = "append"            # add after last item
+    PLAY_NEXT = "play_next"      # insert immediately after current index
+    REPLACE_REMAINING = "replace_remaining"  # discard items after current, then append
+
+
+class ReconciliationState(StrEnum):
+    CLEAN = "clean"
+    DIRTY = "dirty"
+    RECONCILING = "reconciling"
+    DIVERGED = "diverged"
+
+
+@dataclass(slots=True)
 class LibrarySource:
     """A browsable/resolvable audio origin."""
 
@@ -21,7 +47,7 @@ class LibrarySource:
     root_uri: str | None = None
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class MediaItem:
     """A single playable item with stable identity and optional ephemeral resolution.
 
@@ -29,30 +55,36 @@ class MediaItem:
     ---------------
     canonical_id    Stable opaque key: ``"youtube:mAKxcNQpiSg"``,
                     ``"radio:somafm:groovesalad"``, ``"file:/path/to.mp3"``
-    source_locator  Stable user-facing URL: ``"https://youtube.com/watch?v=mAKxcNQpiSg"``
+    source_locator  Stable user-facing URL or path (never expires).
 
-    Resolution field
-    ----------------
-    resolved_uri    Ephemeral direct stream URL.  May be None (not yet resolved)
-                    or stale (YouTube URLs expire after a few hours).
-                    Always check MediaResolution for authoritative, time-bounded values.
+    Ephemeral resolution (stream URI) lives in MediaResolution only --
+    not here.  Two sources of truth is the bug, not the fix.
     """
 
-    id: str
+    id: MediaItemId
     source_id: str
     title: str
     canonical_id: str  # e.g. "youtube:mAKxcNQpiSg"
     source_locator: str  # stable user-visible URL or path
     media_type: Literal["track", "broadcast", "livestream", "playlist", "album"]
-    resolved_uri: str | None = None  # ephemeral — may expire
     duration_seconds: int | None = None
     thumbnail_uri: str | None = None
     seekable: bool = True
     content_type: str | None = None
     uploader: str | None = None
 
+    def __post_init__(self) -> None:
+        if not self.id:
+            raise ValueError("MediaItem.id must not be empty")
+        if not self.title:
+            raise ValueError("MediaItem.title must not be empty")
+        if not self.canonical_id:
+            raise ValueError("MediaItem.canonical_id must not be empty")
+        if not self.source_locator:
+            raise ValueError("MediaItem.source_locator must not be empty")
 
-@dataclass
+
+@dataclass(slots=True)
 class MediaResolution:
     """Authoritative, time-bounded resolution of a MediaItem to a stream URI.
 
@@ -61,7 +93,7 @@ class MediaResolution:
     """
 
     id: str
-    media_item_id: str
+    media_item_id: MediaItemId
     resolved_uri: str
     resolver: Literal["yt-dlp", "direct", "cache", "radio"]
     expires_at: datetime | None = None
@@ -77,14 +109,14 @@ class MediaResolution:
         return not self.is_expired(now)
 
 
-@dataclass
+@dataclass(slots=True)
 class Library:
     """Browsable media universe — a named collection of sources and cached items."""
 
     id: str
     name: str
     sources: list[LibrarySource] = field(default_factory=list)
-    items: dict[str, MediaItem] = field(default_factory=dict)
+    items: dict[MediaItemId, MediaItem] = field(default_factory=dict)
 
     def add_source(self, source: LibrarySource) -> None:
         self.sources.append(source)
@@ -99,7 +131,7 @@ class Library:
         return None
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class MediaItemRef:
     """Ordered reference to a MediaItem within a playlist."""
 
@@ -107,7 +139,7 @@ class MediaItemRef:
     position: int
 
 
-@dataclass
+@dataclass(slots=True)
 class Playlist:
     """Ordered, saved collection of media item references."""
 
@@ -117,7 +149,7 @@ class Playlist:
     source_id: str | None = None
 
 
-@dataclass
+@dataclass(slots=True)
 class QueueItem:
     """One slot in the active playback queue for a zone.
 
@@ -126,14 +158,17 @@ class QueueItem:
     """
 
     id: str
-    media_item_id: str  # resolve through library — not embedded
+    media_item_id: MediaItemId  # resolve through library — not embedded
     resolved_stream_id: str | None = None
-    state: Literal["pending", "resolved", "playing", "played", "failed"] = "pending"
+    state: QueueItemState = QueueItemState.PENDING
 
 
-@dataclass
-class Queue:
-    """Active playback list for a zone.  Mutable during playback.
+@dataclass(slots=True)
+class AppQueue:
+    """Active playback list owned by the application for a zone.
+
+    Distinct from DeviceQueueSnapshot: this is what *we* want to play,
+    not necessarily what the device currently has loaded.
 
     Mode flags
     ----------
@@ -144,9 +179,9 @@ class Queue:
     origin        how this queue was created
     """
 
-    id: str
-    zone_id: str
-    items: list[QueueItem] = field(default_factory=list)
+    id: QueueId
+    zone_id: ZoneId
+    _items: list[QueueItem] = field(default_factory=list, init=False, repr=False)
     current_index: int | None = None
     repeat_mode: Literal["off", "one", "all"] = "off"
     shuffle_mode: bool = False
@@ -154,24 +189,157 @@ class Queue:
     crossfade: bool = False
     origin: QueueOrigin = "ad_hoc"
     queue_end_behavior: QueueEndBehavior = "stop"
+    version: int = 0
+
+    def __post_init__(self) -> None:
+        if self.current_index is not None and self.current_index >= 0:
+            pass
+        elif self.current_index is not None and self.current_index < 0:
+            raise ValueError(f"current_index must be >= 0, got {self.current_index}")
+
+    @property
+    def items(self) -> tuple[QueueItem, ...]:
+        return tuple(self._items)
 
     @property
     def current_item(self) -> QueueItem | None:
-        if self.current_index is None or not self.items:
+        if self.current_index is None or not self._items:
             return None
-        return self.items[self.current_index]
+        return self._items[self.current_index]
 
     @property
     def has_next(self) -> bool:
-        if not self.items or self.current_index is None:
+        if not self._items or self.current_index is None:
             return False
         if self.repeat_mode == "all":
             return True
-        return self.current_index < len(self.items) - 1
+        return self.current_index < len(self._items) - 1
+
+    def enqueue(self, item: QueueItem, mode: InsertMode = InsertMode.APPEND) -> None:
+        """Insert item into queue per mode, set current_index if queue was empty, increment version."""
+        if mode == InsertMode.PLAY_NEXT:
+            insert_at = (self.current_index + 1) if self.current_index is not None else 0
+            self._items.insert(insert_at, item)
+        elif mode == InsertMode.REPLACE_REMAINING:
+            cut = (self.current_index + 1) if self.current_index is not None else 0
+            del self._items[cut:]
+            self._items.append(item)
+        else:  # APPEND
+            self._items.append(item)
+        if self.current_index is None and self._items:
+            self.current_index = 0
+        self.version += 1
 
     def append(self, item: QueueItem) -> None:
-        self.items.append(item)
+        """Backward-compat alias for enqueue with APPEND mode."""
+        self.enqueue(item)
+
+    def advance(self) -> QueueItem | None:
+        """Advance to the next item per repeat_mode. Returns new current item, or None at queue end."""
+        if not self._items or self.current_index is None:
+            return None
+        if self.repeat_mode == "one":
+            return self.current_item
+        if self.current_index < len(self._items) - 1:
+            self.current_index += 1
+            self.version += 1
+            return self.current_item
+        if self.repeat_mode == "all":
+            self.current_index = 0
+            self.version += 1
+            return self.current_item
+        return None
+
+    def rewind(self) -> QueueItem | None:
+        """Move to previous item. Returns new current item, or None if already at start."""
+        if not self._items or self.current_index is None or self.current_index == 0:
+            return None
+        self.current_index -= 1
+        self.version += 1
+        return self.current_item
+
+    def seek_to(self, idx: int) -> QueueItem:
+        """Jump to item at idx (0-based). Raises IndexError if out of range."""
+        if idx < 0 or idx >= len(self._items):
+            raise IndexError(f"Queue index {idx} out of range (len={len(self._items)})")
+        self.current_index = idx
+        self.version += 1
+        return self._items[idx]
+
+    def update_item_state(self, item_id: str, state: QueueItemState) -> None:
+        """Update the state of an item by id. Raises KeyError if not found."""
+        for item in self._items:
+            if item.id == item_id:
+                item.state = state
+                self.version += 1
+                return
+        raise KeyError(f"QueueItem {item_id!r} not found in queue")
+
+    def mark_played(self, item_id: str) -> None:
+        self.update_item_state(item_id, QueueItemState.PLAYED)
+
+    def mark_failed(self, item_id: str) -> None:
+        self.update_item_state(item_id, QueueItemState.FAILED)
 
     def clear(self) -> None:
-        self.items.clear()
+        self._items.clear()
         self.current_index = None
+        self.version += 1
+
+    def replace_all(self, items: Iterable[QueueItem]) -> None:
+        """Replace all items; resets current_index to 0 if items non-empty, else None."""
+        self._items = list(items)
+        self.current_index = 0 if self._items else None
+        self.version += 1
+
+    def remove_at(self, idx: int) -> QueueItem:
+        """Remove item at idx; adjusts current_index. Raises IndexError if out of range."""
+        if idx < 0 or idx >= len(self._items):
+            raise IndexError(f"Queue index {idx} out of range (len={len(self._items)})")
+        removed = self._items.pop(idx)
+        if self.current_index is not None:
+            if self.current_index > idx:
+                self.current_index -= 1
+            elif self.current_index == idx:
+                self.current_index = idx if idx < len(self._items) else None
+        if not self._items:
+            self.current_index = None
+        self.version += 1
+        return removed
+
+
+@dataclass(slots=True)
+class DeviceQueueSnapshot:
+    """Point-in-time snapshot of what the device currently has loaded/queued.
+
+    Read from the device via AVTransport GetMediaInfo or ContentDirectory queries.
+    Not necessarily in sync with AppQueue — compare via QueueSyncState.
+    id is referenced by QueueSyncState.last_device_snapshot_id.
+    """
+
+    id: str
+    zone_id: ZoneId
+    uris: list[str] = field(default_factory=list)
+    current_uri: str | None = None
+    fetched_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass(slots=True)
+class QueueSyncState:
+    """Sync status between the application AppQueue and the device's loaded content.
+
+    pending_push        AppQueue items not yet sent to the device
+    failed_push         consecutive push failures (reset on success)
+    device_differs      True when the device's loaded URIs don't match AppQueue
+    last_device_snapshot_id  ID of the DeviceQueueSnapshot used in last comparison
+    reconciliation      current reconciliation lifecycle state
+    """
+
+    zone_id: ZoneId
+    in_sync: bool = False
+    last_synced_at: datetime | None = None
+    pending_push: int = 0
+    failed_push: int = 0
+    device_differs: bool = False
+    last_device_snapshot_id: str | None = None
+    reconciliation: ReconciliationState = ReconciliationState.CLEAN
