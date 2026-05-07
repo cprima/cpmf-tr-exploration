@@ -26,6 +26,10 @@ data/*.json
 *.json
 !pyproject.toml
 
+# Firmware / APK binaries
+data/firmware/
+data/apks/
+
 # Audio cache
 .cache/
 /tmp/raumfeld-cache/
