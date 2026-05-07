@@ -27,7 +27,10 @@ data/*.json
 !pyproject.toml
 
 # Firmware / APK binaries
-data/firmware/
+data/firmware/*.img
+data/firmware/*.bin
+data/firmware/*_zImage
+data/firmware/ssh_unlock_*
 data/apks/
 
 # Audio cache
