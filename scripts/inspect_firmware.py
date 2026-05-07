@@ -228,7 +228,8 @@ def probe_extracted(root: Path, img_path: Path | None = None) -> dict:
 
     # 2. strings scan on raw img for kernel version
     if shutil.which("strings") and img_path and img_path.exists():
-        code, out, _ = run(["strings", "-n", "8", str(img_path)], timeout=120)
+        print(f"  strings scan {img_path.name} …", flush=True)
+        code, out, _ = run(["strings", "-n", "8", str(img_path)], timeout=180)
         for line in out.splitlines():
             for pat in VERSION_PATTERNS:
                 m = pat.search(line)
@@ -236,11 +237,17 @@ def probe_extracted(root: Path, img_path: Path | None = None) -> dict:
                     findings["versions"].append(m.group(0))
                     if "Linux version" in m.group(0):
                         findings["kernel_version"] = m.group(0)
+        print(f"  strings done — {len(findings['versions'])} version strings found", flush=True)
 
     # 3. Walk tree for interesting files and capabilities
+    print(f"  walking extracted tree …", flush=True)
+    file_count = 0
     for path in root.rglob("*"):
         if not path.is_file():
             continue
+        file_count += 1
+        if file_count % 500 == 0:
+            print(f"    … {file_count} files scanned", flush=True)
         rel_str = str(path.relative_to(root))
 
         # Note interesting paths
