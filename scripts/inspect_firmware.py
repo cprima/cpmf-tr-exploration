@@ -138,14 +138,19 @@ def extract_with_binwalk(img_path: Path, out_dir: Path) -> bool:
         print("  [!] binwalk not found — skipping extraction")
         return False
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"  binwalk -e {img_path.name} …")
-    code, stdout, stderr = run(
+    print(f"  binwalk -e {img_path.name} … (streaming output below)", flush=True)
+    import subprocess as _sp
+    proc = _sp.Popen(
         ["binwalk", "--extract", "--directory", str(out_dir),
          "--matryoshka", "--depth", "4", str(img_path)],
-        timeout=600,
+        stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True,
     )
-    if code != 0:
-        print(f"  [!] binwalk exit {code}: {stderr[:200]}")
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        print(f"    {line}", end="", flush=True)
+    proc.wait()
+    if proc.returncode != 0:
+        print(f"  [!] binwalk exit {proc.returncode}", flush=True)
     return out_dir.exists() and any(out_dir.iterdir())
 
 
@@ -410,9 +415,10 @@ def main() -> None:
             print(f"[SKIP] {img_path} not found")
             continue
 
-        print(f"\n{'='*60}")
-        print(f"  {img_path.name}  ({human_size(img_path.stat().st_size)})")
-        print(f"{'='*60}")
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        print(f"\n{'='*60}", flush=True)
+        print(f"  {img_path.name}  ({human_size(img_path.stat().st_size)})  [{ts} UTC]", flush=True)
+        print(f"{'='*60}", flush=True)
 
         fmt = detect_format(img_path)
         print(f"  Format : {fmt.get('format')}")
