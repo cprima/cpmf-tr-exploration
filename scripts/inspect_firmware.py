@@ -137,12 +137,14 @@ def extract_with_binwalk(img_path: Path, out_dir: Path) -> bool:
     if not shutil.which("binwalk"):
         print("  [!] binwalk not found — skipping extraction")
         return False
+    if out_dir.exists() and any(out_dir.iterdir()):
+        print(f"  skip extraction (already extracted: {out_dir})", flush=True)
+        return True
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"  binwalk -e {img_path.name} … (streaming output below)", flush=True)
     import subprocess as _sp
     proc = _sp.Popen(
-        ["binwalk", "--extract", "--directory", str(out_dir),
-         "--matryoshka", "--depth", "4", str(img_path)],
+        ["binwalk", "--extract", "--directory", str(out_dir), str(img_path)],
         stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True,
     )
     assert proc.stdout is not None
