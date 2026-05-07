@@ -25,7 +25,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 FIRMWARE_DIR = PROJECT_ROOT / "data" / "firmware"
-WORK_DIR = PROJECT_ROOT / "data" / "firmware_extracted"
+WORK_DIR = Path.home() / "fw_work"   # native Linux fs — avoids WSL/NTFS overhead
 DOCS_DIR = PROJECT_ROOT / "docs" / "firmware"
 
 # ---------------------------------------------------------------------------
@@ -403,7 +403,7 @@ def write_summary(results: list[dict], docs_dir: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Inspect Raumfeld/Teufel recovery firmware images.")
     ap.add_argument("--firmware-dir", default=str(FIRMWARE_DIR), help="Directory with .img files")
-    ap.add_argument("--work-dir", default=str(WORK_DIR), help="Extraction working directory")
+    ap.add_argument("--work-dir", default=str(WORK_DIR), help="Extraction working directory (default: ~/fw_work, native Linux fs)")
     ap.add_argument("--docs-dir", default=str(DOCS_DIR), help="Output documentation directory")
     ap.add_argument("--no-extract", action="store_true", help="Skip binwalk extraction (strings only)")
     ap.add_argument("images", nargs="*", help="Specific .img files to process (default: all)")
