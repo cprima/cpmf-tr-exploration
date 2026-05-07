@@ -19,6 +19,8 @@ dev     = ["pytest>=8.0", "ruff>=0.4"]
 [project.scripts]
 raumtube-discover = "cli.discover:main"
 raumtube-play     = "cli.play:main"
+raumtube-enqueue  = "cli.enqueue:main"
+raumtube-dequeue  = "cli.dequeue:main"
 raumtube-scpd     = "cli.scpd:main"
 
 [tool.hatch.build.targets.wheel]

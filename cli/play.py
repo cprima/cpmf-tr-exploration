@@ -1,4 +1,4 @@
-"""raumtube-play — stream a URL to a Raumfeld zone renderer."""
+"""raumtube-play — play a URL or the persisted queue on a Raumfeld zone."""
 
 import argparse
 
@@ -6,7 +6,14 @@ from cprima_raumtube._compat import ensure_utf8_stdout
 from cprima_raumtube.config import load_config
 from cprima_raumtube.devices import get_zone
 from cprima_raumtube.model.aggregates import System
-from cprima_raumtube.services import PlaybackManager, QueueManager, StreamManager, load_index
+from cprima_raumtube.services import (
+    PlaybackManager,
+    QueueManager,
+    StreamManager,
+    load_index,
+    load_queue,
+    save_queue,
+)
 from cprima_raumtube.upnp.transport import Renderer
 
 
@@ -15,8 +22,10 @@ def main() -> None:
 
     cfg = load_config()
 
-    ap = argparse.ArgumentParser(description="Play a URL on a Raumfeld zone.")
-    ap.add_argument("url")
+    ap = argparse.ArgumentParser(
+        description="Play a URL (or the persisted queue) on a Raumfeld zone."
+    )
+    ap.add_argument("url", nargs="?", default=None, help="URL to play (omit to play from queue)")
     ap.add_argument("zone", nargs="?", default="HomeOffice")
     ap.add_argument(
         "--live", action="store_true", help="Force pipe mode (radio, TTS, live streams)"
@@ -24,7 +33,7 @@ def main() -> None:
     ap.add_argument(
         "--enqueue",
         action="store_true",
-        help="Append to existing queue instead of replacing it",
+        help="Append URL to existing queue instead of replacing it",
     )
     ap.add_argument(
         "--repeat",
@@ -52,21 +61,30 @@ def main() -> None:
     renderer = Renderer.from_zone(zone)
     print(f"Zone   : {zone['friendly_name']} ({zone.get('model', '?')})")
 
-    # Build in-memory system, load persistent cache index
     system = System()
-    load_index(system.library, cfg.local_ip and cfg.cache_dir or cfg.cache_dir)
+    load_index(system.library, cfg.cache_dir)
+    load_queue(system.playback, zone_id, cfg.cache_dir)
 
     sm = StreamManager(args.local_ip, args.port)
     qm = QueueManager(system, cfg)
     pm = PlaybackManager(system, renderer, qm, sm)
 
-    mode = "live" if args.live else "auto"
-    item = qm.enqueue(zone_id, args.url, mode=mode, replace=not args.enqueue)
-    print(f"Title  : {item.title}")
-    if item.duration_seconds:
-        from cprima_raumtube.didl import _fmt_dur
-
-        print(f"Duration: {_fmt_dur(item.duration_seconds)}")
+    if args.url:
+        mode = "live" if args.live else "auto"
+        item = qm.enqueue(zone_id, args.url, mode=mode, replace=not args.enqueue)
+        print(f"Title  : {item.title}")
+        if item.duration_seconds:
+            from cprima_raumtube.didl import _fmt_dur
+            print(f"Duration: {_fmt_dur(item.duration_seconds)}")
+        queue = system.playback.get_or_create_queue(zone_id)
+        save_queue(queue, cfg.cache_dir)
+    else:
+        queue = system.playback.get_or_create_queue(zone_id)
+        if not queue.items:
+            ap.error("Queue is empty — provide a URL or use 'raumtube-enqueue' first")
+        print(f"Queue  : {len(queue.items)} item(s)")
+        # Reset to start of queue
+        queue.current_index = 0
 
     if args.repeat:
         qm.set_repeat(zone_id, args.repeat)
@@ -80,7 +98,6 @@ def main() -> None:
             pass
         pm.stop(zone_id)
     else:
-
         def _on_change(uri: str, reason: object) -> None:
             if reason:
                 print(f"\n  [{reason}]  advancing queue …")

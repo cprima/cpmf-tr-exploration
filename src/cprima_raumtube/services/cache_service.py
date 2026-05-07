@@ -1,7 +1,8 @@
-"""Persistent cache index — MediaItem and CacheEntry serialization.
+"""Persistent cache index — MediaItem, CacheEntry, and Queue serialization.
 
 MediaResolution is intentionally excluded (ephemeral; expires within hours).
 CacheEntry.path is validated on load; entries for missing files are dropped.
+Queue state (items + current_index) survives across CLI invocations.
 """
 
 from __future__ import annotations
@@ -10,8 +11,8 @@ import json
 import logging
 from pathlib import Path
 
-from cprima_raumtube.model.aggregates import LibraryAggregate  # noqa: F401 (type only)
-from cprima_raumtube.model.media import Library, MediaItem
+from cprima_raumtube.model.aggregates import LibraryAggregate, PlaybackAggregate  # noqa: F401
+from cprima_raumtube.model.media import Library, MediaItem, Queue, QueueItem
 from cprima_raumtube.model.streaming import CacheEntry
 
 _log = logging.getLogger(__name__)
@@ -124,3 +125,82 @@ def load_index(library: LibraryAggregate, cache_dir: Path) -> None:
     _log.debug(
         "cache index loaded: %d items, %d entries from %s", loaded_items, loaded_entries, path
     )
+
+
+# ── Queue persistence ─────────────────────────────────────────────────────────
+
+_QUEUES_FILE = "queues.json"
+_QUEUES_VERSION = 1
+
+
+def _queues_path(cache_dir: Path) -> Path:
+    return cache_dir / _QUEUES_FILE
+
+
+def save_queue(queue: Queue, cache_dir: Path) -> None:
+    """Persist a single zone queue to cache_dir/queues.json (merge with existing zones)."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = _queues_path(cache_dir)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception:
+        data = {}
+    data.setdefault("version", _QUEUES_VERSION)
+    data.setdefault("queues", {})
+    data["queues"][queue.zone_id] = {
+        "id": queue.id,
+        "zone_id": queue.zone_id,
+        "current_index": queue.current_index,
+        "repeat_mode": queue.repeat_mode,
+        "shuffle_mode": queue.shuffle_mode,
+        "queue_end_behavior": queue.queue_end_behavior,
+        "items": [
+            {"id": qi.id, "media_item_id": qi.media_item_id, "state": qi.state}
+            for qi in queue.items
+        ],
+    }
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    _log.debug("queue saved: zone=%s %d items", queue.zone_id, len(queue.items))
+
+
+def load_queue(playback: PlaybackAggregate, zone_id: str, cache_dir: Path) -> Queue:
+    """Load (or create) the persisted queue for zone_id into playback aggregate."""
+    path = _queues_path(cache_dir)
+    queue = playback.get_or_create_queue(zone_id)
+    if not path.exists():
+        return queue
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = data.get("queues", {}).get(zone_id)
+        if raw is None:
+            return queue
+        queue.id = raw.get("id", queue.id)
+        queue.current_index = raw.get("current_index")
+        queue.repeat_mode = raw.get("repeat_mode", "off")
+        queue.shuffle_mode = raw.get("shuffle_mode", False)
+        queue.queue_end_behavior = raw.get("queue_end_behavior", "stop")
+        queue.items = [
+            QueueItem(
+                id=qi["id"],
+                media_item_id=qi["media_item_id"],
+                state=qi.get("state", "pending"),
+            )
+            for qi in raw.get("items", [])
+        ]
+        _log.debug("queue loaded: zone=%s %d items", zone_id, len(queue.items))
+    except Exception as exc:
+        _log.warning("could not read queue for zone %s: %s", zone_id, exc)
+    return queue
+
+
+def clear_queue(zone_id: str, cache_dir: Path) -> None:
+    """Remove the persisted queue entry for zone_id."""
+    path = _queues_path(cache_dir)
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data.get("queues", {}).pop(zone_id, None)
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        _log.warning("could not clear queue for zone %s: %s", zone_id, exc)
