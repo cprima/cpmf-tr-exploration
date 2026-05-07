@@ -123,13 +123,14 @@ class QueueManager:
             )
         else:
             # Radio / generic HTTP stream — no probing needed
+            # mode="live" forces ffmpeg proxy (live_pipe); default "auto" tries direct_url first
             item = MediaItem(
                 id=new_id(),
                 source_id=_DEFAULT_LIB_ID,
                 title=source_url,
                 canonical_id=canonical,
                 source_locator=source_url,
-                media_type="broadcast",
+                media_type="livestream" if mode == "live" else "broadcast",
                 seekable=False,
                 content_type="audio/mpeg",
             )
