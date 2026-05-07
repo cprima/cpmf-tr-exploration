@@ -133,26 +133,49 @@ def _parse_uboot_header(head: bytes) -> dict:
 # Extraction
 # ---------------------------------------------------------------------------
 
-def extract_with_binwalk(img_path: Path, out_dir: Path) -> bool:
-    if not shutil.which("binwalk"):
-        print("  [!] binwalk not found — skipping extraction")
-        return False
-    if out_dir.exists() and any(out_dir.iterdir()):
-        print(f"  skip extraction (already extracted: {out_dir})", flush=True)
-        return True
-    out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"  binwalk -e {img_path.name} … (streaming output below)", flush=True)
+# Filesystem types that warrant a second-pass binwalk extraction
+SECOND_PASS_SUFFIXES = {".cramfs", ".ext2", ".squashfs", ".jffs2", ".ubifs"}
+
+
+def _binwalk_extract(src: Path, out_dir: Path, label: str) -> bool:
     import subprocess as _sp
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  binwalk -e {label} …", flush=True)
     proc = _sp.Popen(
-        ["binwalk", "--extract", "--directory", str(out_dir), str(img_path)],
+        ["binwalk", "--extract", "--directory", str(out_dir), str(src)],
         stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True,
     )
     assert proc.stdout is not None
     for line in proc.stdout:
-        print(f"    {line}", end="", flush=True)
+        line = line.rstrip()
+        if line and "WARNING: Symlink" not in line:
+            print(f"    {line}", flush=True)
     proc.wait()
     if proc.returncode != 0:
         print(f"  [!] binwalk exit {proc.returncode}", flush=True)
+    return out_dir.exists() and any(out_dir.iterdir())
+
+
+def extract_with_binwalk(img_path: Path, out_dir: Path) -> bool:
+    if not shutil.which("binwalk"):
+        print("  [!] binwalk not found — skipping extraction")
+        return False
+
+    # Pass 1: extract the image itself
+    if out_dir.exists() and any(out_dir.iterdir()):
+        print(f"  pass 1: skip (already extracted: {out_dir})", flush=True)
+    else:
+        _binwalk_extract(img_path, out_dir, img_path.name)
+
+    # Pass 2: extract any embedded filesystems found in pass 1
+    for candidate in sorted(out_dir.rglob("*")):
+        if candidate.suffix in SECOND_PASS_SUFFIXES and candidate.is_file():
+            pass2_dir = out_dir / ("_pass2_" + candidate.stem)
+            if pass2_dir.exists() and any(pass2_dir.iterdir()):
+                print(f"  pass 2: skip {candidate.name} (already done)", flush=True)
+            else:
+                _binwalk_extract(candidate, pass2_dir, candidate.name)
+
     return out_dir.exists() and any(out_dir.iterdir())
 
 
@@ -239,7 +262,7 @@ def probe_extracted(root: Path, img_path: Path | None = None) -> dict:
                         findings["kernel_version"] = m.group(0)
         print(f"  strings done — {len(findings['versions'])} version strings found", flush=True)
 
-    # 3. Walk tree for interesting files and capabilities
+    # 3. Walk tree for interesting files and capabilities (including pass2 dirs)
     print(f"  walking extracted tree …", flush=True)
     file_count = 0
     for path in root.rglob("*"):
