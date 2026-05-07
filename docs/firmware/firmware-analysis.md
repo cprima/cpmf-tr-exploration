@@ -235,76 +235,27 @@ The `ExpectedRevision` + `OnConflict` parameters implement optimistic concurrenc
 
 ### 6.5 Setup Service (`master-process`)
 
-Raumfeld Setup REST API on port 48366 plus UPnP setup service (`setup-service.xml`). UPnP actions: `GetInfo`, `CheckForUpdate`, `GetUpdateInfo`, `DoUpdate`, `GetDevice`, `GetNetworkInfo`. Full REST API documented in `docs/findings/device-exploration.md`.
+Raumfeld Setup REST API on port 48366 plus UPnP setup service (`setup-service.xml`). UPnP actions: `GetInfo`, `CheckForUpdate`, `GetUpdateInfo`, `DoUpdate`, `GetDevice`, `GetNetworkInfo`. Full REST API documented in `docs/reverse-engineering/device-exploration.md`.
 
 ---
 
 ## 7. Audio Pipeline and Multi-Room Synchronization
 
-### 7.1 ALSA Layer
+Dedicated documents cover these topics in full:
 
-`/etc/asound.conf` defines two custom PCM types — `raumfeld-plug` and `raumfeld` — both backed by the proprietary ALSA plugin:
+- **`docs/dsp/audio-pipeline.md`** — ALSA layer, proprietary PCM plugin (`Teufel::DspAlsaPlugin`), renderer and hardware DSP configs per model, crossover/EQ pipeline, line-in routing, `timestretcher` role
+- **`docs/synchronization/sync-protocol.md`** — `SetNextStartTriggerTime`, `pickNextStartTriggerTime`, `ZoneObserverSetNextAndWaitForConnect`, `AudioLoop` continuous correction, `RoomStates`, `BendAVTransportURI`
 
-```
-/usr/lib/alsa-lib/libasound_module_pcm_raumfeld.so
-```
-
-C++ class: `Teufel::DspAlsaPlugin<PluginConfiguration<InFormat, OutFormat, Channels>>`  
-Templates instantiated for: (S16/S32/S24) × (S16/S32/S10) × (2 or 4 channels).
-
-The PCM type accepts a `hw_delay_ms` parameter passed to the underlying `hw` device — this compensates for the hardware DAC buffer latency in the synchronization calculation.
-
-An additional `pcm.socket` type routes audio via a Unix domain socket at `/tmp/udsplug/socket`, allowing the renderer and DSP pipeline to communicate in-process without going through kernel ALSA buffers.
-
-### 7.2 DSP Pipeline (per-model XML in `/raumfeld/hardwared/dsp-config/` and `/raumfeld/renderer/dsp-config/`)
-
-The renderer's DSP config (`raumfeld-one-s.xml`) defines a three-stage pipeline:
-
-```
-stream-decoder → timestretcher → output
-```
-
-The `timestretcher` module is the continuous synchronization mechanism: it time-stretches the decoded audio stream to match the wall clock reference, compensating for buffer drift, network jitter, and clock skew between devices.
-
-The hardwared DSP config (`raumfeld-one-s-alsa.xml`) defines the loudspeaker crossover and EQ applied at the ALSA layer before the DAC:
-
-```
-input → system-sounds → patchbay → user-eq → bass-boost × 2 → sumshelf
-  ├── woofer path: subsonic × 2 → lo-pass (2400 Hz) → EQ × 3 → gain (−17.5 dB) → output[0]
-  └── tweeter path: hi-pass (4000 Hz) → EQ × 5 → phase-invert → delay → gain (+9 dB) → output[1]
-```
-
-The `patchbay` module accepts a `routing` parameter (`mono`, `stereo-l-r`, `stereo-r-l`) — this is the stereo/mono pairing mode observable in the app's channel mapping settings.
-
-### 7.3 Multi-Room Synchronization Protocol
-
-Evidence from binary strings in `/raumfeld/renderer/renderer`:
+Key binary strings that evidence the sync mechanism (from `renderer` and `stream-relay`):
 
 ```
 TransportService::SetNextStartTriggerTime
 AudioLoop: OUT OF SYNC, we are lagging behind the system clock (…)
 AudioLoop: OUT OF SYNC, we are running ahead of the system clock (…)
-fixed-clock
-Renderer: Migrating fixed clock property with value
-```
-
-Evidence from binary strings in `/raumfeld/stream-relay/stream-relay`:
-
-```
 Teufel::Zone::pickNextStartTriggerTime
 Teufel::ZoneObserverSetNextAndWaitForConnect
 Teufel::Zone::handleRoomStateChanges
 ```
-
-**Synchronization sequence**:
-1. `timeserver` on the zone host provides a shared wall clock (NTP-derived).
-2. When zone playback starts, `stream-relay` calls `Teufel::Zone::pickNextStartTriggerTime` to select a future wall clock timestamp far enough ahead for all renderers to buffer audio.
-3. `stream-relay` sends `SetNextStartTriggerTime(TimeService=<timeserver-UDN>, StartTime=<wall-clock-ts>)` to each physical renderer in the zone via UPnP.
-4. `ZoneObserverSetNextAndWaitForConnect` waits until all renderers acknowledge, then unblocks.
-5. Each renderer's `AudioLoop` decodes and buffers audio, then starts DAC output exactly at the wall clock timestamp.
-6. The `timestretcher` DSP module continuously monitors `clock_gettime` vs. the expected playback position and adjusts the playback rate to stay synchronized, logging out-of-sync events when drift exceeds threshold.
-
-This is a software-only wall-clock-anchored synchronization scheme. The app (Android/iOS) is purely the control plane — it does not participate in the sync protocol. All timing logic is in the firmware.
 
 ---
 
