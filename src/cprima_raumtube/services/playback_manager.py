@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Literal
 
 from cprima_raumtube.didl import build_didl
 from cprima_raumtube.model.aggregates import CommandRecord, CommandStatus, new_id
-from cprima_raumtube.model.events import TransportEvent
+from cprima_raumtube.model.events import TransportEvent, VolumeEvent
 from cprima_raumtube.model.media import QueueItemState
 from cprima_raumtube.model.playback import (
     DesiredTransportState,
@@ -132,13 +132,54 @@ class PlaybackManager:
         )
 
     def stop(self, zone_id: str, reason: StopReason = "manual_stop") -> None:
-        """Stop renderer, close stream session, update PlaybackSession."""
+        """Stop renderer, close stream session, update PlaybackSession.
+
+        Best-effort: local model cleanup proceeds even if the SOAP call fails,
+        because abandoning a playback session is always the right local decision.
+        """
+        ps = self._installation.state.get_playback_session(zone_id)
+
+        # Record desired intent
+        zone_state = self._installation.state.get_or_create_zone_state(zone_id)
+        zone_state.desired = DesiredTransportState(target_state=TransportStateName.STOPPED)
+
+        # Audit record
+        record = CommandRecord(
+            id=new_id(),
+            action="Stop",
+            target_udn=self._renderer.udn,
+            zone_id=zone_id,  # type: ignore[arg-type]
+            status=CommandStatus.RUNNING,
+        )
+        self._installation.state.command_log.append(record)
+
+        # SOAP call — split exception handling; proceed with local cleanup regardless
+        old_state = (
+            zone_state.transport.state if zone_state.transport else TransportStateName.PLAYING
+        )
+        soap_ok = False
         try:
             self._renderer.stop()
-        except Exception as exc:
-            _log.warning("[play] renderer stop error: %s", exc)
+            soap_ok = True
+        except SoapFault as exc:
+            _finish_command(
+                record,
+                CommandStatus.FAILED,
+                soap_fault_code=str(exc.code) if exc.code is not None else None,
+                soap_fault_description=str(exc),
+            )
+            _log.warning("[play] renderer stop SOAP fault: %s", exc)
+        except TimeoutError as exc:
+            _finish_command(record, CommandStatus.TIMED_OUT, network_error=str(exc))
+            _log.warning("[play] renderer stop timeout: %s", exc)
+        except OSError as exc:
+            _finish_command(record, CommandStatus.FAILED, network_error=str(exc))
+            _log.warning("[play] renderer stop OS error: %s", exc)
 
-        ps = self._installation.state.get_playback_session(zone_id)
+        if soap_ok:
+            _finish_command(record, CommandStatus.SUCCEEDED)
+
+        # Local cleanup unconditionally — model must reflect abandoned intent
         if ps is not None:
             if ps.stream_session_id:
                 self._sm.stop(ps.stream_session_id)
@@ -151,6 +192,16 @@ class PlaybackManager:
         qi = queue.current_item
         if qi is not None and qi.state == QueueItemState.PLAYING and reason == "natural_end":
             queue.mark_current_played()
+
+        if soap_ok:
+            zone_state.updated_at = datetime.now(UTC)
+            self._installation.state.emit(
+                TransportEvent(
+                    zone_id=zone_id,  # type: ignore[arg-type]
+                    new_state=TransportStateName.STOPPED,
+                    old_state=old_state,
+                )
+            )
 
         _log.info("[play] zone=%s stopped  reason=%s", zone_id, reason)
 
@@ -220,10 +271,118 @@ class PlaybackManager:
         )
 
     def resume(self, zone_id: str) -> None:
-        self._renderer.play()
+        # 1. Session guard
         ps = self._installation.state.get_playback_session(zone_id)
-        if ps and ps.state == PlaybackSessionState.PAUSED:
-            ps.resume()
+        if ps is None or ps.state != PlaybackSessionState.PAUSED:
+            raise ValueError(f"resume requires PAUSED session, zone={zone_id!r}")
+
+        # 2. Record desired intent
+        zone_state = self._installation.state.get_or_create_zone_state(zone_id)
+        zone_state.desired = DesiredTransportState(target_state=TransportStateName.PLAYING)
+
+        # 3. Audit record
+        record = CommandRecord(
+            id=new_id(),
+            action="Play",
+            target_udn=self._renderer.udn,
+            zone_id=zone_id,  # type: ignore[arg-type]
+            status=CommandStatus.RUNNING,
+        )
+        self._installation.state.command_log.append(record)
+
+        # 4. SOAP call
+        old_state = (
+            zone_state.transport.state if zone_state.transport else TransportStateName.PAUSED_PLAYBACK
+        )
+        try:
+            self._renderer.play()
+        except SoapFault as exc:
+            _finish_command(
+                record,
+                CommandStatus.FAILED,
+                soap_fault_code=str(exc.code) if exc.code is not None else None,
+                soap_fault_description=str(exc),
+            )
+            ps.fail(f"SOAP fault: {exc}", PlaybackFailureKind.DEVICE_REJECTED)
+            return
+        except TimeoutError as exc:
+            _finish_command(record, CommandStatus.TIMED_OUT, network_error=str(exc))
+            ps.fail(str(exc), PlaybackFailureKind.TIMEOUT)
+            return
+        except OSError as exc:
+            _finish_command(record, CommandStatus.FAILED, network_error=str(exc))
+            ps.fail(str(exc), PlaybackFailureKind.NETWORK)
+            return
+
+        # 5. Success path
+        _finish_command(record, CommandStatus.SUCCEEDED)
+        ps.resume()
+        zone_state.updated_at = datetime.now(UTC)
+        self._installation.state.emit(
+            TransportEvent(
+                zone_id=zone_id,  # type: ignore[arg-type]
+                new_state=TransportStateName.PLAYING,
+                old_state=old_state,
+            )
+        )
+
+    def set_volume(self, zone_id: str, level: int) -> None:
+        # 1. Guard: valid range
+        if not 0 <= level <= 100:
+            raise ValueError(f"Volume must be 0-100, got {level}")
+
+        # 2. Capability check — UNTESTED means unprobed: do not block
+        zr = self._installation.inventory.zone_renderers.get(self._renderer.udn)
+        if zr is not None and zr.profile is not None:
+            vol_cap = zr.profile.audio.volume
+            if vol_cap.confidence != CapabilityConfidence.UNTESTED and not vol_cap.supported:
+                raise ValueError(
+                    f"Renderer {self._renderer.udn!r} does not support volume control"
+                    f" (source={vol_cap.source}, confidence={vol_cap.confidence})"
+                )
+
+        # 3. Audit record
+        record = CommandRecord(
+            id=new_id(),
+            action="SetVolume",
+            target_udn=self._renderer.udn,
+            zone_id=zone_id,  # type: ignore[arg-type]
+            status=CommandStatus.RUNNING,
+            details={"level": str(level)},
+        )
+        self._installation.state.command_log.append(record)
+
+        # 4. SOAP call
+        zone_state = self._installation.state.get_or_create_zone_state(zone_id)
+        old_volume = zone_state.rendering.volume.get("Master")
+        try:
+            self._renderer.set_volume(level)
+        except SoapFault as exc:
+            _finish_command(
+                record,
+                CommandStatus.FAILED,
+                soap_fault_code=str(exc.code) if exc.code is not None else None,
+                soap_fault_description=str(exc),
+            )
+            return
+        except TimeoutError as exc:
+            _finish_command(record, CommandStatus.TIMED_OUT, network_error=str(exc))
+            return
+        except OSError as exc:
+            _finish_command(record, CommandStatus.FAILED, network_error=str(exc))
+            return
+
+        # 5. Success path — update observed rendering state and emit event
+        _finish_command(record, CommandStatus.SUCCEEDED)
+        zone_state.rendering.volume["Master"] = level
+        zone_state.updated_at = datetime.now(UTC)
+        self._installation.state.emit(
+            VolumeEvent(
+                zone_id=zone_id,  # type: ignore[arg-type]
+                new_volume=level,
+                old_volume=old_volume,
+            )
+        )
 
     def advance_and_play(self, zone_id: str) -> bool:
         """stop(skip) → skip_next → play_current. Returns True if started, False if exhausted."""

@@ -142,6 +142,29 @@ def test_pause_soap_fault() -> None:
     assert record.finished_at is not None
 
 
+def test_pause_timeout() -> None:
+    """Network timeout → session → ERROR / TIMEOUT, command TIMED_OUT."""
+    installation = Installation.ephemeral()
+    _start_playing(installation, _ZONE)
+
+    fake = FakeRenderer(pause_raises=TimeoutError("timed out"))
+    pm = _make_pm(fake, installation)
+    pm.pause(_ZONE)
+
+    ps = installation.state.get_playback_session(_ZONE)
+    assert ps is not None
+    assert ps.state == PlaybackSessionState.ERROR
+    assert ps.failure_kind == PlaybackFailureKind.TIMEOUT
+
+    assert fake.pause_call_count == 1
+
+    assert len(installation.state.command_log) == 1
+    record = installation.state.command_log[0]
+    assert record.status == CommandStatus.TIMED_OUT
+    assert record.finished_at is not None
+    assert record.network_error == "timed out"
+
+
 def test_pause_unsupported_capability() -> None:
     """Renderer profile declares pause not supported (CERTAIN) → raise before touching device."""
     installation = Installation.ephemeral()
