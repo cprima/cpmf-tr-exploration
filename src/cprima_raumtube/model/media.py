@@ -149,18 +149,77 @@ class Playlist:
     source_id: str | None = None
 
 
+def _expect_qi_state(
+    current: QueueItemState,
+    valid: set[QueueItemState],
+    operation: str,
+) -> None:
+    if current not in valid:
+        valid_str = ", ".join(sorted(s.value for s in valid))
+        raise ValueError(
+            f"{operation} requires state in {{{valid_str}}}, got {current.value!r}"
+        )
+
+
 @dataclass(slots=True)
 class QueueItem:
     """One slot in the active playback queue for a zone.
 
     References the MediaItem by ID to avoid embedding a mutable object graph.
     Resolve via LibraryAggregate.find_item() or System.library.
+    State transitions are enforced — use the transition methods, not direct assignment.
     """
 
     id: str
     media_item_id: MediaItemId  # resolve through library — not embedded
     resolved_stream_id: str | None = None
     state: QueueItemState = QueueItemState.PENDING
+
+    def __post_init__(self) -> None:
+        if self.state not in {QueueItemState.PENDING, QueueItemState.RESOLVED}:
+            raise ValueError(
+                f"QueueItem cannot be constructed in state {self.state.value!r}; "
+                "use PENDING or RESOLVED"
+            )
+
+    def mark_resolved(self, stream_id: str) -> None:
+        """PENDING | RESOLVED → RESOLVED; records the HTTP stream session ID."""
+        _expect_qi_state(
+            self.state,
+            {QueueItemState.PENDING, QueueItemState.RESOLVED},
+            "mark_resolved",
+        )
+        self.resolved_stream_id = stream_id
+        self.state = QueueItemState.RESOLVED
+
+    def mark_playing(self) -> None:
+        """RESOLVED → PLAYING."""
+        _expect_qi_state(self.state, {QueueItemState.RESOLVED}, "mark_playing")
+        self.state = QueueItemState.PLAYING
+
+    def mark_played(self) -> None:
+        """PLAYING → PLAYED."""
+        _expect_qi_state(self.state, {QueueItemState.PLAYING}, "mark_played")
+        self.state = QueueItemState.PLAYED
+
+    def mark_failed(self) -> None:
+        """PENDING | RESOLVED | PLAYING → FAILED."""
+        _expect_qi_state(
+            self.state,
+            {QueueItemState.PENDING, QueueItemState.RESOLVED, QueueItemState.PLAYING},
+            "mark_failed",
+        )
+        self.state = QueueItemState.FAILED
+
+    def reset(self) -> None:
+        """PLAYED | FAILED → PENDING; clears resolved_stream_id."""
+        _expect_qi_state(
+            self.state,
+            {QueueItemState.PLAYED, QueueItemState.FAILED},
+            "reset",
+        )
+        self.state = QueueItemState.PENDING
+        self.resolved_stream_id = None
 
 
 @dataclass(slots=True)
@@ -266,20 +325,59 @@ class AppQueue:
         self.version += 1
         return self._items[idx]
 
-    def update_item_state(self, item_id: str, state: QueueItemState) -> None:
-        """Update the state of an item by id. Raises KeyError if not found."""
+    def _require_current(self, operation: str) -> QueueItem:
+        if self.current_index is None or not self._items:
+            raise ValueError(f"{operation}: queue has no current item")
+        return self._items[self.current_index]
+
+    def mark_current_resolved(self, stream_id: str) -> None:
+        """Record stream session on current item: PENDING | RESOLVED → RESOLVED."""
+        self._require_current("mark_current_resolved").mark_resolved(stream_id)
+        self.version += 1
+
+    def mark_current_playing(self) -> None:
+        """Transition current item RESOLVED → PLAYING."""
+        self._require_current("mark_current_playing").mark_playing()
+        self.version += 1
+
+    def mark_current_played(self) -> None:
+        """Transition current item PLAYING → PLAYED."""
+        self._require_current("mark_current_played").mark_played()
+        self.version += 1
+
+    def mark_current_failed(self) -> None:
+        """Transition current item to FAILED from any non-terminal state."""
+        self._require_current("mark_current_failed").mark_failed()
+        self.version += 1
+
+    def play_next(self) -> QueueItem | None:
+        """Mark current item as played (if PLAYING), advance, return new current.
+
+        Returns None if the queue is exhausted after advancing.
+        """
+        current = self.current_item
+        if current is not None and current.state == QueueItemState.PLAYING:
+            current.mark_played()
+            self.version += 1
+        return self.advance()
+
+    def mark_played(self, item_id: str) -> None:
+        """Mark a specific item as PLAYED by id. Raises KeyError if not found."""
         for item in self._items:
             if item.id == item_id:
-                item.state = state
+                item.mark_played()
                 self.version += 1
                 return
         raise KeyError(f"QueueItem {item_id!r} not found in queue")
 
-    def mark_played(self, item_id: str) -> None:
-        self.update_item_state(item_id, QueueItemState.PLAYED)
-
     def mark_failed(self, item_id: str) -> None:
-        self.update_item_state(item_id, QueueItemState.FAILED)
+        """Mark a specific item as FAILED by id. Raises KeyError if not found."""
+        for item in self._items:
+            if item.id == item_id:
+                item.mark_failed()
+                self.version += 1
+                return
+        raise KeyError(f"QueueItem {item_id!r} not found in queue")
 
     def clear(self) -> None:
         self._items.clear()

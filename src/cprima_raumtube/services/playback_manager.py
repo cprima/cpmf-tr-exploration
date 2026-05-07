@@ -87,13 +87,13 @@ class PlaybackManager:
         self._renderer.play()
 
         # Update model state
+        queue.mark_current_resolved(session.id)
+        queue.mark_current_playing()
         ps = self._installation.state.get_or_create_playback_session(zone_id)
         if not ps.is_active:
             ps.start()
         ps.current_item_id = qi.media_item_id
         ps.stream_session_id = session.id
-        qi.state = QueueItemState.PLAYING
-        qi.resolved_stream_id = session.id
 
         _log.info(
             "[play] zone=%s  %r  mode=%s  url=%s",
@@ -118,11 +118,11 @@ class PlaybackManager:
             if ps.is_active:
                 ps.stop()
 
-        # Mark current queue item as played/failed
+        # Mark current queue item as played on natural end
         queue = self._installation.state.get_or_create_queue(zone_id)
         qi = queue.current_item
-        if qi is not None and qi.state == QueueItemState.PLAYING:
-            qi.state = QueueItemState.PLAYED if reason == "natural_end" else qi.state
+        if qi is not None and qi.state == QueueItemState.PLAYING and reason == "natural_end":
+            queue.mark_current_played()
 
         _log.info("[play] zone=%s stopped  reason=%s", zone_id, reason)
 
