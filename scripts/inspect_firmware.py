@@ -186,7 +186,7 @@ CAPABILITY_PATTERNS = {
 }
 
 
-def probe_extracted(root: Path) -> dict:
+def probe_extracted(root: Path, img_path: Path | None = None) -> dict:
     """Walk extracted filesystem tree and collect version/capability info."""
     findings: dict = {
         "versions": [],
@@ -220,11 +220,8 @@ def probe_extracted(root: Path) -> dict:
             pass
 
     # 2. strings scan on raw img for kernel version
-    if shutil.which("strings"):
-        code, out, _ = run(["strings", "-n", "8", str(root.parent / (root.name + ".img"))
-                             if (root.parent / (root.name + ".img")).exists()
-                             else str(list(root.parent.glob("*.img"))[0])
-                             ], timeout=120)
+    if shutil.which("strings") and img_path and img_path.exists():
+        code, out, _ = run(["strings", "-n", "8", str(img_path)], timeout=120)
         for line in out.splitlines():
             for pat in VERSION_PATTERNS:
                 m = pat.search(line)
@@ -430,7 +427,7 @@ def main() -> None:
             extracted = extract_with_binwalk(img_path, out_dir)
 
         if extracted:
-            findings = probe_extracted(out_dir)
+            findings = probe_extracted(out_dir, img_path)
         else:
             findings = probe_with_strings(img_path)
 
