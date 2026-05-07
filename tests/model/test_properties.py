@@ -1,10 +1,9 @@
 """Property-based tests using hypothesis."""
 from __future__ import annotations
 
-from hypothesis import given, settings
-from hypothesis import strategies as st
+from hypothesis import given, strategies as st
 
-from cprima_raumtube.model.media import AppQueue, QueueItem, QueueItemState
+from cprima_raumtube.model.media import AppQueue, QueueItem
 from cprima_raumtube.model.playback import PlaybackPosition
 from cprima_raumtube.model.protocol import ProtocolInfo
 

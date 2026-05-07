@@ -88,7 +88,8 @@ class PlaybackManager:
 
         # Update model state
         ps = self._installation.state.get_or_create_playback_session(zone_id)
-        ps.state = PlaybackSessionState.STARTING
+        if not ps.is_active:
+            ps.start()
         ps.current_item_id = qi.media_item_id
         ps.stream_session_id = session.id
         qi.state = QueueItemState.PLAYING
@@ -114,7 +115,8 @@ class PlaybackManager:
             if ps.stream_session_id:
                 self._sm.stop(ps.stream_session_id)
                 ps.stream_session_id = None
-            ps.state = PlaybackSessionState.STOPPED
+            if ps.is_active:
+                ps.stop()
 
         # Mark current queue item as played/failed
         queue = self._installation.state.get_or_create_queue(zone_id)
@@ -127,14 +129,14 @@ class PlaybackManager:
     def pause(self, zone_id: str) -> None:
         self._renderer.pause()
         ps = self._installation.state.get_playback_session(zone_id)
-        if ps:
-            ps.state = PlaybackSessionState.PAUSED
+        if ps and ps.state == PlaybackSessionState.PLAYING:
+            ps.pause()
 
     def resume(self, zone_id: str) -> None:
         self._renderer.play()
         ps = self._installation.state.get_playback_session(zone_id)
-        if ps:
-            ps.state = PlaybackSessionState.PLAYING
+        if ps and ps.state == PlaybackSessionState.PAUSED:
+            ps.resume()
 
     def advance_and_play(self, zone_id: str) -> bool:
         """stop(skip) → skip_next → play_current. Returns True if started, False if exhausted."""

@@ -2,7 +2,13 @@
 
 import pytest
 
-from cprima_raumtube.model.media import AppQueue, InsertMode, QueueItem, QueueItemState, QueueSyncState
+from cprima_raumtube.model.media import (
+    AppQueue,
+    InsertMode,
+    QueueItem,
+    QueueItemState,
+    QueueSyncState,
+)
 
 
 def _item(n: int) -> QueueItem:

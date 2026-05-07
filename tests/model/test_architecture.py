@@ -18,11 +18,10 @@ def _imports_from_model(path: pathlib.Path) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     deps = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module:
-            if "cprima_raumtube.model." in node.module:
-                dep = node.module.split(".")[-1]
-                if dep in _rank:
-                    deps.append(dep)
+        if isinstance(node, ast.ImportFrom) and node.module and "cprima_raumtube.model." in node.module:
+            dep = node.module.split(".")[-1]
+            if dep in _rank:
+                deps.append(dep)
     return deps
 
 
@@ -33,9 +32,11 @@ def test_no_upward_imports() -> None:
         mod = py.stem
         if mod not in _rank or mod == "__init__":
             continue
-        for dep in _imports_from_model(py):
-            if _rank[dep] >= _rank[mod]:
-                violations.append(f"{mod} (rank {_rank[mod]}) imports {dep} (rank {_rank[dep]})")
+        violations.extend(
+            f"{mod} (rank {_rank[mod]}) imports {dep} (rank {_rank[dep]})"
+            for dep in _imports_from_model(py)
+            if _rank[dep] >= _rank[mod]
+        )
     assert not violations, "Layer ordering violations:\n" + "\n".join(violations)
 
 

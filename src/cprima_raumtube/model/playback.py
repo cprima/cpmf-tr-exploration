@@ -180,12 +180,25 @@ class PlaybackIntent:
     thumbnail_uri: str | None = None
 
 
+def _expect_state(
+    current: PlaybackSessionState,
+    valid: set[PlaybackSessionState],
+    operation: str,
+) -> None:
+    if current not in valid:
+        valid_str = ", ".join(sorted(s.value for s in valid))
+        raise ValueError(
+            f"{operation} requires state in {{{valid_str}}}, got {current.value!r}"
+        )
+
+
 @dataclass(slots=True)
 class PlaybackSession:
     """Record of one app-initiated playback attempt for a zone.
 
     Ties together: zone -> queue -> current item -> stream session.
     Transport/rendering snapshots live in ZoneRuntimeState, not here.
+    State transitions are enforced — use the transition methods, not direct assignment.
     """
 
     id: str
@@ -206,3 +219,90 @@ class PlaybackSession:
             PlaybackSessionState.PLAYING,
             PlaybackSessionState.PAUSED,
         }
+
+    def start(self) -> None:
+        """IDLE | STOPPED | ERROR → STARTING."""
+        _expect_state(
+            self.state,
+            {PlaybackSessionState.IDLE, PlaybackSessionState.STOPPED, PlaybackSessionState.ERROR},
+            "start",
+        )
+        self.state = PlaybackSessionState.STARTING
+        self.version += 1
+
+    def mark_transitioning(self) -> None:
+        """STARTING | PLAYING → TRANSITIONING (gapless pre-arm)."""
+        _expect_state(
+            self.state,
+            {PlaybackSessionState.STARTING, PlaybackSessionState.PLAYING},
+            "mark_transitioning",
+        )
+        self.state = PlaybackSessionState.TRANSITIONING
+        self.version += 1
+
+    def mark_playing(self) -> None:
+        """STARTING | TRANSITIONING → PLAYING."""
+        _expect_state(
+            self.state,
+            {PlaybackSessionState.STARTING, PlaybackSessionState.TRANSITIONING},
+            "mark_playing",
+        )
+        self.state = PlaybackSessionState.PLAYING
+        self.version += 1
+
+    def pause(self) -> None:
+        """PLAYING → PAUSED."""
+        _expect_state(self.state, {PlaybackSessionState.PLAYING}, "pause")
+        self.state = PlaybackSessionState.PAUSED
+        self.version += 1
+
+    def resume(self) -> None:
+        """PAUSED → PLAYING."""
+        _expect_state(self.state, {PlaybackSessionState.PAUSED}, "resume")
+        self.state = PlaybackSessionState.PLAYING
+        self.version += 1
+
+    def stop(self) -> None:
+        """Any active state → STOPPED."""
+        _expect_state(
+            self.state,
+            {
+                PlaybackSessionState.STARTING,
+                PlaybackSessionState.TRANSITIONING,
+                PlaybackSessionState.PLAYING,
+                PlaybackSessionState.PAUSED,
+            },
+            "stop",
+        )
+        self.state = PlaybackSessionState.STOPPED
+        self.version += 1
+
+    def fail(self, message: str, kind: PlaybackFailureKind | None = None) -> None:
+        """Any non-terminal state → ERROR."""
+        _expect_state(
+            self.state,
+            {
+                PlaybackSessionState.IDLE,
+                PlaybackSessionState.STARTING,
+                PlaybackSessionState.TRANSITIONING,
+                PlaybackSessionState.PLAYING,
+                PlaybackSessionState.PAUSED,
+            },
+            "fail",
+        )
+        self.state = PlaybackSessionState.ERROR
+        self.error_message = message
+        self.failure_kind = kind
+        self.version += 1
+
+    def reset(self) -> None:
+        """STOPPED | ERROR → IDLE; clears error fields."""
+        _expect_state(
+            self.state,
+            {PlaybackSessionState.STOPPED, PlaybackSessionState.ERROR},
+            "reset",
+        )
+        self.state = PlaybackSessionState.IDLE
+        self.error_message = None
+        self.failure_kind = None
+        self.version += 1
