@@ -112,7 +112,7 @@ def _parse_uboot_header(head: bytes) -> dict:
     if len(head) < 64:
         return {"format": "U-Boot uImage (truncated header)"}
     magic, hcrc, timestamp, size, load, ep, dcrc, os_, arch, typ, comp = \
-        struct.unpack_from(">IIIIIIIBBBBB", head)
+        struct.unpack_from(">IIIIIIIBBBB", head)
     name = head[32:64].rstrip(b"\x00").decode(errors="replace")
     return {
         "format": "U-Boot uImage (legacy)",
