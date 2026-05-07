@@ -26,6 +26,9 @@ data/*.json
 *.json
 !pyproject.toml
 
+# Firmware extraction working directory (large, generated)
+data/firmware_extracted/
+
 # Firmware / APK binaries
 data/firmware/*.img
 data/firmware/*.bin
