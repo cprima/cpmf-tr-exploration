@@ -133,7 +133,7 @@ def _parse_uboot_header(head: bytes) -> dict:
 # Extraction
 # ---------------------------------------------------------------------------
 
-# Filesystem types that warrant a second-pass binwalk extraction
+# Filesystem types that warrant a second-pass extraction
 SECOND_PASS_SUFFIXES = {".cramfs", ".ext2", ".squashfs", ".jffs2", ".ubifs"}
 
 
@@ -148,11 +148,44 @@ def _binwalk_extract(src: Path, out_dir: Path, label: str) -> bool:
     assert proc.stdout is not None
     for line in proc.stdout:
         line = line.rstrip()
-        if line and "WARNING: Symlink" not in line:
+        if line and "WARNING: Symlink" not in line and "WARNING: Extractor" not in line:
             print(f"    {line}", flush=True)
     proc.wait()
     if proc.returncode != 0:
         print(f"  [!] binwalk exit {proc.returncode}", flush=True)
+    return out_dir.exists() and any(out_dir.iterdir())
+
+
+def _ext2_extract(src: Path, out_dir: Path) -> bool:
+    """Extract ext2 filesystem using debugfs rdump."""
+    if not shutil.which("debugfs"):
+        return False
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  debugfs rdump {src.name} → {out_dir.name} …", flush=True)
+    code, _, stderr = run(
+        ["debugfs", "-R", f"rdump / {out_dir}", str(src)],
+        timeout=300,
+    )
+    if stderr.strip():
+        for line in stderr.strip().splitlines()[:5]:
+            print(f"    {line}", flush=True)
+    populated = any(out_dir.iterdir()) if out_dir.exists() else False
+    if populated:
+        count = sum(1 for _ in out_dir.rglob("*") if _.is_file())
+        print(f"    extracted {count} files", flush=True)
+    return populated
+
+
+def _cramfs_extract(src: Path, out_dir: Path) -> bool:
+    """Extract cramfs using cramfsck if available."""
+    if not shutil.which("cramfsck"):
+        print(f"  [!] cramfsck not found — install cramfsprogs to extract {src.name}", flush=True)
+        return False
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  cramfsck -x {src.name} …", flush=True)
+    code, _, stderr = run(["cramfsck", "-x", str(out_dir), str(src)], timeout=120)
+    if code != 0:
+        print(f"  [!] cramfsck exit {code}: {stderr[:100]}", flush=True)
     return out_dir.exists() and any(out_dir.iterdir())
 
 
@@ -167,14 +200,21 @@ def extract_with_binwalk(img_path: Path, out_dir: Path) -> bool:
     else:
         _binwalk_extract(img_path, out_dir, img_path.name)
 
-    # Pass 2: extract any embedded filesystems found in pass 1
+    # Pass 2: extract embedded filesystems found in pass 1
     for candidate in sorted(out_dir.rglob("*")):
-        if candidate.suffix in SECOND_PASS_SUFFIXES and candidate.is_file():
-            pass2_dir = out_dir / ("_pass2_" + candidate.stem)
-            if pass2_dir.exists() and any(pass2_dir.iterdir()):
-                print(f"  pass 2: skip {candidate.name} (already done)", flush=True)
-            else:
+        if not candidate.is_file() or candidate.suffix not in SECOND_PASS_SUFFIXES:
+            continue
+        pass2_dir = out_dir / ("_pass2_" + candidate.stem)
+        if pass2_dir.exists() and any(pass2_dir.iterdir()):
+            print(f"  pass 2: skip {candidate.name} (already done)", flush=True)
+            continue
+        if candidate.suffix == ".ext2":
+            if not _ext2_extract(candidate, pass2_dir):
                 _binwalk_extract(candidate, pass2_dir, candidate.name)
+        elif candidate.suffix == ".cramfs":
+            _cramfs_extract(candidate, pass2_dir)
+        else:
+            _binwalk_extract(candidate, pass2_dir, candidate.name)
 
     return out_dir.exists() and any(out_dir.iterdir())
 
