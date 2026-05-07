@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cprima-raumtube"
-version = "0.1.0"
+version = "0.0.1"
 description = "UPnP audio bridge for Teufel Raumfeld devices"
 requires-python = ">=3.11"
 readme = "README.md"
