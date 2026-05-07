@@ -89,19 +89,21 @@ class PlaybackManager:
         # Resolve to stream source
         source, mode = self._qm.resolve_item(qi)
 
-        # Start HTTP session
+        # Start stream session
         if mode == "cached_file":
             from pathlib import Path
 
             session = self._sm.start_cached(Path(source))
+        elif mode == "direct_url":
+            session = self._sm.start_direct(str(source))
         else:
             session = self._sm.start_live(str(source))
 
         session.media_item_id = media_item.id
         self._installation.state.stream_sessions[session.id] = session
 
-        # Build DIDL metadata
-        live = mode == "live_pipe"
+        # Build DIDL metadata — broadcast and direct streams use audioBroadcast class
+        live = mode in {"live_pipe", "direct_url"}
         didl = build_didl(
             uri=session.public_url,
             title=media_item.title,

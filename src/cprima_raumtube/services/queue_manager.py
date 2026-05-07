@@ -166,24 +166,29 @@ class QueueManager:
 
     def resolve_item(
         self, queue_item: QueueItem
-    ) -> tuple[Path | str, Literal["cached_file", "live_pipe"]]:
+    ) -> tuple[Path | str, Literal["cached_file", "live_pipe", "direct_url"]]:
         """Return (stream_source, mode) for a QueueItem.
 
         cached_file → (Path to MP3 on disk, "cached_file")
-        live_pipe   → (source URL, "live_pipe")
+        direct_url  → (source URL, "direct_url")   broadcast/radio — renderer fetches directly
+        live_pipe   → (source URL, "live_pipe")     livestream — proxied through local ffmpeg
         """
         media_item = self._installation.library.find_item(queue_item.media_item_id)
         if media_item is None:
             raise KeyError(f"MediaItem {queue_item.media_item_id!r} not found in library")
 
-        # Check cache first
+        # Check cache first (always wins regardless of media type)
         for entry in self._installation.library.cache_entries.values():
             if entry.media_item_id == media_item.id:
                 p = Path(entry.path)
                 if p.exists():
                     return p, "cached_file"
 
-        # Live / radio: stream directly
+        # Broadcast/radio: renderer can reach the source URL directly
+        if media_item.media_type == "broadcast":
+            return media_item.source_locator, "direct_url"
+
+        # Livestream and anything else: pipe through local ffmpeg
         return media_item.source_locator, "live_pipe"
 
     # ── Navigation ────────────────────────────────────────────────────────────

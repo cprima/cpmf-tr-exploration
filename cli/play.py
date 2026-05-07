@@ -5,6 +5,7 @@ import argparse
 from cprima_raumtube._compat import ensure_utf8_stdout
 from cprima_raumtube.config import load_config
 from cprima_raumtube.devices import get_zone
+from cprima_raumtube.discovery.ssdp import detect_source_ip
 from cprima_raumtube.model.registry import Installation
 from cprima_raumtube.services import (
     PlaybackManager,
@@ -47,14 +48,16 @@ def main() -> None:
         help="Play one item and exit without advancing the queue",
     )
     ap.add_argument(
-        "--local-ip", default=cfg.local_ip, help="Local IP exposed to the Raumfeld renderer"
+        "--local-ip",
+        default=cfg.local_ip or None,
+        help="Local IP exposed to the Raumfeld renderer (auto-detected when omitted)",
     )
     ap.add_argument("--port", type=int, default=cfg.port)
     ap.add_argument("--devices-file", default=str(cfg.devices_file))
     args = ap.parse_args()
 
     if not args.local_ip:
-        ap.error("--local-ip is required (or set RAUMTUBE_LOCAL_IP)")
+        args.local_ip = detect_source_ip() or ""
 
     zone = get_zone(args.zone, args.devices_file)
     zone_id = zone["udn"]
