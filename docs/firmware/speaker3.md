@@ -21,4 +21,11 @@
 
 ## Capabilities detected
 
-_none detected_
+- Avahi/mDNS
+- Buildroot
+- OpenWRT
+- Raumfeld
+- SSH
+- Spotify
+- TuneIn
+- UPnP/DLNA

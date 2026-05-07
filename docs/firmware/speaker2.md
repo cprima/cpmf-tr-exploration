@@ -30,40 +30,10 @@
 
 ## Capabilities detected
 
+- Avahi/mDNS
+- Buildroot
 - Raumfeld
-
-## Interesting paths (up to 50)
-
-- `_speaker2.img.extracted/am33xx-raumfeld-base-0-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-base-0-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-connector-0-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-connector-0-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-connector-2-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-connector-2-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-cube-0-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-cube-0-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-element-0-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-element-0-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-one-0-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-one-0-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-one-2-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-one-2-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-soundbar-0-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-soundbar-0-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-soundbar-2-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-soundbar-2-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-sounddeck-0-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-sounddeck-0-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-sounddeck-2-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-sounddeck-2-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-speaker-l-0-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-speaker-l-0-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-speaker-l-2-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-speaker-l-2-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-speaker-ml-0-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-speaker-ml-0-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-speaker-ml-2-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-speaker-ml-2-1.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-test-jig-0-0.dtb`
-- `_speaker2.img.extracted/am33xx-raumfeld-test-jig-0-1.dtb`
-- `_speaker2.img.extracted/raumfeld-fallback.dtb`
+- SSH
+- Spotify
+- TuneIn
+- UPnP/DLNA
