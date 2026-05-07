@@ -99,6 +99,7 @@ from cprima_raumtube.model.services import (
     CapabilityProbe,
     DriftEstimator,
     QueueReconciler,
+    RendererPort,
 )
 from cprima_raumtube.model.streaming import (
     CacheEntry,

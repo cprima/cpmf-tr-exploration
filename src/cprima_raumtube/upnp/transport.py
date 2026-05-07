@@ -1,17 +1,24 @@
 """Renderer — pleasant UPnP AVTransport + RenderingControl API."""
 
 from cprima_raumtube.devices import AVT_SVC, RC_SVC
+from cprima_raumtube.model.ids import RendererUdn
 from cprima_raumtube.soap import soap_call
 
 
 class Renderer:
-    def __init__(self, avt_control: str, rc_control: str | None = None) -> None:
+    def __init__(
+        self,
+        avt_control: str,
+        rc_control: str | None = None,
+        udn: RendererUdn = RendererUdn(""),
+    ) -> None:
         self._avt = avt_control
         self._rc = rc_control
+        self.udn = udn
 
     @classmethod
     def from_zone(cls, zone: dict) -> "Renderer":
-        return cls(zone["avt_control"], zone.get("rc_control"))
+        return cls(zone["avt_control"], zone.get("rc_control"), RendererUdn(zone.get("udn", "")))
 
     # ── Transport ────────────────────────────────────────────────────────────
 

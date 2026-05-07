@@ -8,6 +8,17 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+
+class SoapFault(RuntimeError):
+    """Raised when a UPnP SOAP action returns an HTTP error response.
+
+    code   HTTP status code from the device response (e.g. 500).
+    """
+
+    def __init__(self, message: str, code: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
 SOAP_ENV = "http://schemas.xmlsoap.org/soap/envelope/"
 SOAP_ENC = "http://schemas.xmlsoap.org/soap/encoding/"
 
@@ -56,7 +67,7 @@ def soap_call(
     except urllib.error.HTTPError as e:
         raw = e.read()
         fault = _parse_fault(raw)
-        raise RuntimeError(f"SOAP fault {e.code}: {fault}") from e
+        raise SoapFault(f"SOAP fault {e.code}: {fault}", code=e.code) from e
 
     if debug:
         log.debug("response: %s", raw.decode(errors="replace")[:400])

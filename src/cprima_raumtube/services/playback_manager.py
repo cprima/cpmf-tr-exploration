@@ -13,30 +13,58 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
 from cprima_raumtube.didl import build_didl
+from cprima_raumtube.model.aggregates import CommandRecord, CommandStatus, new_id
+from cprima_raumtube.model.events import TransportEvent
 from cprima_raumtube.model.media import QueueItemState
-from cprima_raumtube.model.playback import PlaybackSessionState
+from cprima_raumtube.model.playback import (
+    DesiredTransportState,
+    PlaybackFailureKind,
+    PlaybackSessionState,
+    TransportStateName,
+)
+from cprima_raumtube.model.topology import CapabilityConfidence
+from cprima_raumtube.soap import SoapFault
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from cprima_raumtube.model.registry import Installation
+    from cprima_raumtube.model.services import RendererPort
     from cprima_raumtube.services.queue_manager import QueueManager
     from cprima_raumtube.services.stream_manager import StreamManager
-    from cprima_raumtube.upnp.transport import Renderer
 
 _log = logging.getLogger(__name__)
 
 StopReason = Literal["natural_end", "manual_stop", "error", "skip"]
 
 
+def _finish_command(
+    record: CommandRecord,
+    status: CommandStatus,
+    *,
+    soap_fault_code: str | None = None,
+    soap_fault_description: str | None = None,
+    network_error: str | None = None,
+) -> None:
+    record.status = status
+    record.finished_at = datetime.now(UTC)
+    if soap_fault_code is not None:
+        record.soap_fault_code = soap_fault_code
+    if soap_fault_description is not None:
+        record.soap_fault_description = soap_fault_description
+    if network_error is not None:
+        record.network_error = network_error
+
+
 class PlaybackManager:
     def __init__(
         self,
         installation: Installation,
-        renderer: Renderer,
+        renderer: RendererPort,
         queue_manager: QueueManager,
         stream_manager: StreamManager,
     ) -> None:
@@ -127,10 +155,69 @@ class PlaybackManager:
         _log.info("[play] zone=%s stopped  reason=%s", zone_id, reason)
 
     def pause(self, zone_id: str) -> None:
-        self._renderer.pause()
+        # 1. Session guard
         ps = self._installation.state.get_playback_session(zone_id)
-        if ps and ps.state == PlaybackSessionState.PLAYING:
-            ps.pause()
+        if ps is None or ps.state != PlaybackSessionState.PLAYING:
+            raise ValueError(f"pause requires PLAYING session, zone={zone_id!r}")
+
+        # 2. Capability check — UNTESTED confidence means unprobed: do not block
+        zr = self._installation.inventory.zone_renderers.get(self._renderer.udn)
+        if zr is not None and zr.profile is not None:
+            pause_cap = zr.profile.playback.pause
+            if pause_cap.confidence != CapabilityConfidence.UNTESTED and not pause_cap.supported:
+                raise ValueError(
+                    f"Renderer {self._renderer.udn!r} does not support pause"
+                    f" (source={pause_cap.source}, confidence={pause_cap.confidence})"
+                )
+
+        # 3. Record desired intent
+        zone_state = self._installation.state.get_or_create_zone_state(zone_id)
+        zone_state.desired = DesiredTransportState(target_state=TransportStateName.PAUSED_PLAYBACK)
+
+        # 4. Audit record — RUNNING marks the attempt as in-flight
+        record = CommandRecord(
+            id=new_id(),
+            action="Pause",
+            target_udn=self._renderer.udn,
+            zone_id=zone_id,  # type: ignore[arg-type]
+            status=CommandStatus.RUNNING,
+        )
+        self._installation.state.command_log.append(record)
+
+        # 5. SOAP call — split exception handling: known failures stay in ERROR state;
+        #    unexpected exceptions re-raise so they are not silently swallowed.
+        old_state = zone_state.transport.state if zone_state.transport else TransportStateName.PLAYING
+        try:
+            self._renderer.pause()
+        except SoapFault as exc:
+            _finish_command(
+                record,
+                CommandStatus.FAILED,
+                soap_fault_code=str(exc.code) if exc.code is not None else None,
+                soap_fault_description=str(exc),
+            )
+            ps.fail(f"SOAP fault: {exc}", PlaybackFailureKind.DEVICE_REJECTED)
+            return
+        except TimeoutError as exc:
+            _finish_command(record, CommandStatus.TIMED_OUT, network_error=str(exc))
+            ps.fail(str(exc), PlaybackFailureKind.TIMEOUT)
+            return
+        except OSError as exc:
+            _finish_command(record, CommandStatus.FAILED, network_error=str(exc))
+            ps.fail(str(exc), PlaybackFailureKind.NETWORK)
+            return
+
+        # 6. Success path
+        _finish_command(record, CommandStatus.SUCCEEDED)
+        ps.pause()
+        zone_state.updated_at = datetime.now(UTC)
+        self._installation.state.emit(
+            TransportEvent(
+                zone_id=zone_id,  # type: ignore[arg-type]
+                new_state=TransportStateName.PAUSED_PLAYBACK,
+                old_state=old_state,
+            )
+        )
 
     def resume(self, zone_id: str) -> None:
         self._renderer.play()

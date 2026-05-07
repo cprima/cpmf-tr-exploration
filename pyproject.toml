@@ -23,9 +23,10 @@ raumtube-enqueue  = "cli.enqueue:main"
 raumtube-dequeue  = "cli.dequeue:main"
 raumtube-scpd     = "cli.scpd:main"
 raumtube-model    = "cli.model:main"
+raumtube-dev      = "cli.dev:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cprima_raumtube", "cli"]
+packages = ["src/cprima_raumtube", "cli", "emulator"]
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.9", "mypy>=1.10", "hypothesis>=6.100"]
