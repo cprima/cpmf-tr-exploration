@@ -1,6 +1,7 @@
 """SSDP discovery — async, returns a list of device dicts."""
 
 import logging
+import socket
 from datetime import UTC, datetime
 
 from async_upnp_client.aiohttp import AiohttpRequester
@@ -10,15 +11,34 @@ from async_upnp_client.search import async_search
 log = logging.getLogger(__name__)
 
 
+def detect_source_ip() -> str | None:
+    """Return the IP of the default outbound interface, or None if unreachable.
+
+    Uses a non-sending UDP connect trick: the OS selects the right interface
+    without sending any packets.  Works on Windows, Linux, and macOS.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
 async def discover(
-    source_ip: str,
+    source_ip: str | None = None,
     timeout: int = 6,
     search_target: str = "ssdp:all",
 ) -> list[dict]:
     """Run SSDP discovery and return a list of device entry dicts.
 
     Only GUPnP devices are included (Raumfeld/Teufel stack).
+    source_ip binds the multicast socket to a specific interface.  When
+    omitted it is auto-detected from the default outbound interface.
     """
+    effective_ip = source_ip or detect_source_ip()
+    source = (effective_ip, 0) if effective_ip else None
+
     requester = AiohttpRequester()
     factory = UpnpFactory(requester)
     seen: dict[str, dict] = {}
@@ -61,7 +81,7 @@ async def discover(
         async_callback=on_response,
         timeout=timeout,
         search_target=search_target,
-        source=(source_ip, 0),
+        source=source,
     )
     return list(seen.values())
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from cprima_raumtube._compat import ensure_utf8_stdout
 from cprima_raumtube.config import load_config
-from cprima_raumtube.discovery.ssdp import build_registry, discover
+from cprima_raumtube.discovery.ssdp import build_registry, detect_source_ip, discover
 
 
 def main() -> None:
@@ -18,8 +18,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Scan for Raumfeld UPnP devices.")
     ap.add_argument(
         "--source-ip",
-        default=cfg.source_ip,
-        help="Local IP to bind the SSDP multicast socket (required on Windows)",
+        default=cfg.source_ip or None,
+        help="Local IP to bind the SSDP multicast socket (auto-detected when omitted)",
     )
     ap.add_argument(
         "--timeout", type=int, default=cfg.timeout, help="SSDP search timeout in seconds"
@@ -27,11 +27,13 @@ def main() -> None:
     ap.add_argument("--output", default=str(cfg.devices_file), help="Where to write devices.json")
     args = ap.parse_args()
 
-    if not args.source_ip:
-        ap.error("--source-ip is required (or set RAUMTUBE_SOURCE_IP)")
+    source_ip = args.source_ip or detect_source_ip()
+    if source_ip:
+        print(f"Searching (source={source_ip}, timeout={args.timeout}s)...\n")
+    else:
+        print(f"Searching (source=auto, timeout={args.timeout}s)...\n")
 
-    print(f"Searching (source={args.source_ip}, timeout={args.timeout}s)...\n")
-    devices = asyncio.run(discover(args.source_ip, args.timeout))
+    devices = asyncio.run(discover(source_ip, args.timeout))
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
