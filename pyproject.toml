@@ -26,6 +26,7 @@ raumtube-model    = "cli.model:main"
 raumtube-dev      = "cli.dev:main"
 raumtube-browse   = "cli.browse:main"
 raumtube-fav      = "cli.fav:main"
+raumtube-button   = "cli.button:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cprima_raumtube", "cli", "emulator"]

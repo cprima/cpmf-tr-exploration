@@ -13,7 +13,16 @@ FAV_OBJ = "0/Favorites/MyFavorites"
 
 
 def _list_favs(cd: ContentDirectory) -> list[dict]:
-    return cd.browse(FAV_OBJ)
+    items = cd.browse(FAV_OBJ)
+    # BrowseDirectChildren omits <res> — fetch metadata per item to get stream URIs
+    enriched = []
+    for item in items:
+        if not item.get("resources"):
+            meta = cd.browse_metadata(item["id"])
+            if meta:
+                item = meta[0]
+        enriched.append(item)
+    return enriched
 
 
 def _play_item(item: dict, avt_control: str, metadata_didl: str) -> None:
